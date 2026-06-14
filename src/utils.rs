@@ -135,12 +135,17 @@ pub fn format_token_count(tokens: usize) -> String {
 ///
 /// Users can override any model in config.toml [context.model_windows]
 ///
-/// # Future Enhancement
+/// # Authoritative model metadata (opt-in `[ant]` cache)
 ///
-/// **API-based context window queries**: In a future version, we could query
-/// the Anthropic API or a maintained database to get accurate, up-to-date
-/// context window sizes for all models. This would eliminate the need for
-/// hardcoded defaults and manual config updates.
+/// When the user opts in via `[ant].enabled = true`, an out-of-band
+/// `statusline ant sync` populates a versioned, on-disk models cache
+/// (`src/ant/cache.rs`) with authoritative `max_input_tokens` per model. The
+/// render path consults that cache read-only as Priority 1.5 below — after the
+/// user `[context.model_windows]` override and before the hardcoded smart
+/// defaults — eliminating the need for manual config updates for accurate
+/// context-window sizes. The render path itself does no network I/O and never
+/// spawns a subprocess (D-16); refresh is strictly out-of-band. With `[ant]`
+/// absent or disabled the cache is ignored and the smart defaults apply.
 ///
 /// Get learned context window from database (if available and confident)
 fn get_learned_context_window(
@@ -158,17 +163,6 @@ fn get_learned_context_window(
     learner.get_learned_window(model_name, config.context.learning_confidence_threshold)
 }
 
-/// Potential approaches:
-/// - Query `/v1/models` endpoint (if available) for model metadata
-/// - Maintain a remote JSON file with current context window sizes
-/// - Use a caching strategy to avoid repeated API calls
-/// - Fall back to intelligent defaults if query fails
-///
-/// Trade-offs to consider:
-/// - API latency (would need caching to maintain ~5ms execution time)
-/// - Offline usage (must have fallback)
-/// - API availability and authentication requirements
-///
 /// # Arguments
 ///
 /// * `model_name` - Optional model display name from Claude Code
@@ -182,6 +176,37 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
         // Priority 1: User config overrides (highest priority)
         if let Some(&custom_size) = config.context.model_windows.get(model) {
             return custom_size;
+        }
+
+        // Priority 1.5: Authoritative models cache (opt-in via `[ant].enabled`).
+        //
+        // GATED on `config.ant.enabled` (D-16/D-01, review MUST-FIX #1): the
+        // cache is consulted ONLY when the user has explicitly opted in. With
+        // `[ant]` absent or `enabled = false`, an existing/populated cache MUST
+        // NOT change rendering — so the lookup is skipped entirely here and the
+        // smart default below is byte-identical to v3.1.0.
+        //
+        // This read-only lookup slots between the user override (above, D-02)
+        // and adaptive learning / markers / defaults (below, D-01). Match is by
+        // EXACT canonical id only (HashMap::get, D-04); a versionless
+        // display-name-only `model` (e.g. "Opus") simply won't match a
+        // canonical-id key and falls through (D-05). A cached `0` (or a missing
+        // entry) is treated as unknown and falls through via the
+        // `max_input_tokens > 0` guard (D-06).
+        //
+        // Deliberately NOT memoized in a process-global `OnceLock`/`lazy_static`
+        // (review MUST-FIX #12): a long-lived library/embedding process must be
+        // able to observe a freshly-synced cache. Only the transcript-fallback
+        // path (and only when enabled) reaches this fn, so a direct
+        // once-per-call read is cheap and correct.
+        if config.ant.enabled {
+            if let Some(cache) = crate::ant::cache::read_models_cache() {
+                if let Some(entry) = cache.models.get(model) {
+                    if entry.max_input_tokens > 0 {
+                        return entry.max_input_tokens as usize;
+                    }
+                }
+            }
         }
 
         // Priority 2: Learned values (if adaptive learning enabled and confident)
@@ -1369,6 +1394,152 @@ mod tests {
         assert!(
             working_pct > full_pct,
             "Working mode should show higher percentage than full mode"
+        );
+    }
+
+    // ---- Priority 1.5: opt-in (`[ant].enabled`) models-cache lookup ----
+    //
+    // These tests exercise the ENABLED-GATED cache lookup inside
+    // `get_context_window_for_model`. They mutate process-global env
+    // (`XDG_CACHE_HOME`) and write to the on-disk ant cache, so they are
+    // `#[serial]` (the repo's global test lock for env-mutating tests, review
+    // MUST-FIX #13). `dirs::cache_dir()` honors `XDG_CACHE_HOME` on Linux and
+    // `~/Library/Caches` (i.e. the isolated `HOME`) on macOS — to be robust on
+    // both platforms each test isolates BOTH `XDG_CACHE_HOME` and `HOME` to a
+    // fresh `TempDir`, then writes the cache via the module's own writer so the
+    // file lands wherever the resolver points.
+
+    use crate::ant::cache::{
+        models_cache_path, write_models_cache, ModelEntry, ModelsCache, MODELS_CACHE_SCHEMA_VERSION,
+    };
+
+    /// Isolate the cache dir to a fresh temp location and start known-empty.
+    /// Returns the guard `TempDir` (keep it alive for the test's duration).
+    fn isolate_cache() -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        std::env::set_var("XDG_CACHE_HOME", temp.path());
+        std::env::set_var("HOME", temp.path());
+        // Remove any leftover ant cache dir from a prior serial test.
+        if let Ok(path) = models_cache_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+        temp
+    }
+
+    fn cache_with(model: &str, max_input_tokens: u64) -> ModelsCache {
+        let mut models = std::collections::HashMap::new();
+        models.insert(model.to_string(), ModelEntry { max_input_tokens });
+        ModelsCache {
+            schema_version: MODELS_CACHE_SCHEMA_VERSION,
+            fetched_at: chrono::Utc::now(),
+            models,
+        }
+    }
+
+    fn enabled_config() -> crate::config::Config {
+        let mut cfg = crate::config::Config::default();
+        cfg.ant.enabled = true;
+        cfg
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cache_lookup_wins_over_smart_default_when_enabled() {
+        let _temp = isolate_cache();
+        let cfg = enabled_config();
+        // claude-opus-4-8 smart default is 200k; the cache says 1M.
+        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+        assert_eq!(
+            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            1_000_000,
+            "enabled cache value must beat the smart default (D-01/D-02)"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn populated_cache_is_ignored_when_disabled() {
+        // ENABLED-GATE (review MUST-FIX #1 / T-07-14): the SAME populated cache
+        // present on disk must NOT change rendering when `[ant]` is disabled.
+        let _temp = isolate_cache();
+        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+
+        let disabled = crate::config::Config::default(); // ant.enabled == false (default)
+        let with_cache = get_context_window_for_model(Some("claude-opus-4-8"), &disabled);
+
+        // The no-cache result (smart default) for claude-opus-4-8 is 200k.
+        assert_eq!(
+            with_cache, 200_000,
+            "a populated cache must be ignored when [ant] is disabled/absent"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn user_override_wins_over_cache_even_when_enabled() {
+        // D-02: the user `[context.model_windows]` override beats the cache.
+        let _temp = isolate_cache();
+        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+
+        let mut cfg = enabled_config();
+        cfg.context
+            .model_windows
+            .insert("claude-opus-4-8".to_string(), 500_000);
+
+        assert_eq!(
+            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            500_000,
+            "user override must win over the cache (D-02)"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cached_zero_falls_through_to_smart_default() {
+        // D-06 / T-07-05: a cached `0` is unknown; never render 0.
+        let _temp = isolate_cache();
+        write_models_cache(&cache_with("claude-opus-4-8", 0)).expect("write");
+
+        let cfg = enabled_config();
+        assert_eq!(
+            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            200_000,
+            "a cached 0 must fall through to the smart default, never render 0"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn model_absent_from_cache_falls_through() {
+        // Cache populated for a DIFFERENT model; the requested id isn't present.
+        let _temp = isolate_cache();
+        write_models_cache(&cache_with("claude-sonnet-4", 999_999)).expect("write");
+
+        let cfg = enabled_config();
+        assert_eq!(
+            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            200_000,
+            "an id absent from the cache must fall through to the smart default"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn versionless_display_name_does_not_match_canonical_key() {
+        // D-04/D-05: exact-id match only. A versionless display name ("Opus")
+        // must NOT match the canonical-id key and falls through.
+        let _temp = isolate_cache();
+        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+
+        let cfg = enabled_config();
+        // "Opus" is an unknown model family token to ModelType; the default
+        // window_size (200k) applies — and crucially it is NOT the cached 1M.
+        let result = get_context_window_for_model(Some("Opus"), &cfg);
+        assert_ne!(
+            result, 1_000_000,
+            "a versionless display name must not match a canonical-id cache key"
         );
     }
 }
