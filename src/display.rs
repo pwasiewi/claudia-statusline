@@ -893,6 +893,23 @@ fn format_statusline_with_layout(
         &reset,
     );
 
+    // Org usage/cost (opt-in template variables): {api_cost_today}, {api_cost_mtd},
+    // {api_tokens_by_model}, {api_account}, {api_tz}. Wired ONCE here — this shared
+    // builder site is reached by BOTH the main.rs and lib.rs render paths, so it is
+    // deliberately NOT duplicated into either entrypoint (Pitfall 6). The slice is
+    // present only when `[ant]` is enabled AND a STATUSLINE_ANT_ACCOUNT is set AND
+    // that account's cached slice loads. `read_usage_cache` is the TOTAL reader: it
+    // collapses every error (missing/unreadable/corrupt/schema-mismatch/bad name) to
+    // None and never mkdirs/spawns/networks, so the render path stays offline
+    // (D-16/ANT-02). With no slice, api_usage inserts nothing → byte-identical render.
+    let api_usage_slice = full_config
+        .ant
+        .enabled
+        .then(|| std::env::var("STATUSLINE_ANT_ACCOUNT").ok())
+        .flatten()
+        .and_then(|name| crate::ant::cache::read_usage_cache(&name));
+    builder = builder.api_usage(api_usage_slice.as_ref(), &Colors::light_gray(), &reset);
+
     // Token rate (with component config)
     // Uses rolling window if configured, otherwise session average
     // Now respects rate_display config (output_only, input_only, both)
