@@ -63,6 +63,8 @@ const STDERR_BOUND: usize = 512;
 /// Hard cap on pagination iterations — defends against a server that always
 /// reports `has_more = true` (T-07-10 / T-07-12).
 const MAX_PAGES: usize = 1000;
+/// Maximum accepted length of an API-supplied pagination cursor (CR-01).
+const MAX_CURSOR_LEN: usize = 256;
 
 /// The resolved credential mode for a fetch (D-09). Carries only a non-secret
 /// label; the key itself never lives here.
@@ -217,7 +219,14 @@ fn fetch_all_pages(mode: &CredentialMode) -> Result<HashMap<String, ModelEntry>>
 
         if page.has_more {
             match page.last_id {
-                Some(id) => after_id = Some(id),
+                // Validate the API-supplied cursor BEFORE it reaches either
+                // transport's interpolation site (CR-01). This single choke
+                // point covers both `fetch_page_curl` (curl-config `url`) and
+                // `fetch_page_ant` (`--after-id` argv).
+                Some(id) => {
+                    validate_cursor(&id)?;
+                    after_id = Some(id);
+                }
                 // has_more with no cursor: stop rather than loop forever.
                 None => break,
             }
@@ -359,6 +368,32 @@ fn parse_page(stdout: &[u8]) -> Result<ModelsPage> {
         .map_err(|e| StatuslineError::other(format!("failed to parse Models API JSON: {}", e)))
 }
 
+/// Validate an API-supplied pagination cursor before it is interpolated into a
+/// curl config directive or an `ant --after-id` argv token (CR-01).
+///
+/// The cursor (`last_id`) is untrusted external input. A value containing a
+/// double-quote + newline could terminate the quoted `url = "..."` curl config
+/// directive and inject arbitrary config (`output`, extra `header`, `-K`, ...);
+/// a `-`-leading value could be misparsed as a curl/ant flag; `&`/`#`/whitespace
+/// would silently corrupt the request. Restrict to a conservative id alphabet
+/// and a sane length; on violation abort the fetch (nothing is published).
+fn validate_cursor(id: &str) -> Result<()> {
+    if id.is_empty() || id.len() > MAX_CURSOR_LEN {
+        return Err(StatuslineError::other(
+            "Models API returned an out-of-range pagination cursor; aborting fetch",
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(StatuslineError::other(
+            "Models API returned a malformed pagination cursor; aborting fetch",
+        ));
+    }
+    Ok(())
+}
+
 /// Whether an executable is resolvable on `PATH` (no spawn). Used to choose the
 /// transport and to produce a clear no-tool error.
 fn tool_on_path(tool: &str) -> bool {
@@ -390,8 +425,12 @@ fn sanitize_stderr(stderr: &[u8]) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     let trimmed = filtered.trim();
-    if trimmed.len() > STDERR_BOUND {
-        format!("{}…", &trimmed[..STDERR_BOUND])
+    if trimmed.chars().count() > STDERR_BOUND {
+        // Char-boundary-safe truncation (CR-02): `from_utf8_lossy` can yield
+        // multi-byte chars (U+FFFD is 3 bytes), so a raw `&trimmed[..N]` byte
+        // slice can panic mid-character. Take whole chars instead.
+        let truncated: String = trimmed.chars().take(STDERR_BOUND).collect();
+        format!("{}…", truncated)
     } else if trimmed.is_empty() {
         "(no diagnostic output)".to_string()
     } else {
@@ -559,5 +598,36 @@ mod tests {
         let long = vec![b'a'; STDERR_BOUND + 100];
         let bounded = sanitize_stderr(&long);
         assert!(bounded.chars().count() <= STDERR_BOUND + 1); // +1 for the ellipsis
+    }
+
+    // CR-02 regression: invalid UTF-8 becomes U+FFFD (3 bytes/char) via
+    // from_utf8_lossy. A raw byte-index slice at STDERR_BOUND would land
+    // mid-character and panic; char-based truncation must not.
+    #[test]
+    fn sanitize_does_not_panic_on_multibyte_boundary() {
+        let invalid = vec![0xFFu8; STDERR_BOUND + 50];
+        let bounded = sanitize_stderr(&invalid);
+        assert!(bounded.chars().count() <= STDERR_BOUND + 1);
+
+        // Valid multi-byte UTF-8 (é = 2 bytes) crossing the boundary too.
+        let accented = "é".repeat(STDERR_BOUND + 50);
+        let bounded2 = sanitize_stderr(accented.as_bytes());
+        assert!(bounded2.chars().count() <= STDERR_BOUND + 1);
+    }
+
+    // CR-01 regression: an API pagination cursor is untrusted input and must be
+    // rejected unless it matches the conservative id alphabet.
+    #[test]
+    fn validate_cursor_rejects_injection_and_accepts_ids() {
+        // Quote+newline breakout, flag-leading, and metacharacters are rejected.
+        assert!(validate_cursor("good\"\nurl = \"http://evil").is_err());
+        assert!(validate_cursor("-K/etc/passwd").is_err());
+        assert!(validate_cursor("a&b#c d").is_err());
+        assert!(validate_cursor("").is_err());
+        assert!(validate_cursor(&"a".repeat(MAX_CURSOR_LEN + 1)).is_err());
+
+        // Realistic Anthropic-style cursor ids pass.
+        assert!(validate_cursor("model_01H8xYz-abc.123").is_ok());
+        assert!(validate_cursor("claude-3-5-sonnet-20241022").is_ok());
     }
 }
