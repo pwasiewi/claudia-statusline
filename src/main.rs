@@ -212,6 +212,15 @@ pub(crate) enum AntAction {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Fetch org usage & cost (Admin API) and cache the active account's slice
+    SyncUsage {
+        /// Run in quiet mode (suppress the summary; errors still print)
+        #[arg(short, long)]
+        quiet: bool,
+        /// Override the active account (default: STATUSLINE_ANT_ACCOUNT)
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

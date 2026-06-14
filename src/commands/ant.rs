@@ -9,14 +9,17 @@
 
 use std::collections::HashMap;
 
-use crate::ant::cache::{models_cache_path, write_models_cache, ModelsCache};
+use crate::ant::cache::{
+    models_cache_path, usage_cache_path, write_models_cache, write_usage_cache, ModelsCache,
+};
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{Result, StatuslineError};
 
 /// Dispatch entry for `statusline ant <action>`.
 pub(crate) fn handle_ant_command(action: crate::AntAction) -> Result<()> {
     match action {
         crate::AntAction::SyncModels { quiet } => sync_models(quiet),
+        crate::AntAction::SyncUsage { quiet, account } => sync_usage(quiet, account),
     }
 }
 
@@ -56,6 +59,75 @@ fn sync_models(quiet: bool) -> Result<()> {
         println!("Cache: {}", path.display());
         // Credential SOURCE label only — never the key (D-09 / D-17).
         println!("Credential source: {}", outcome.credential_source);
+    }
+
+    Ok(())
+}
+
+/// `ant sync-usage`: fetch the org usage & cost Admin endpoints out-of-band and
+/// publish the ACTIVE account's per-account slice.
+///
+/// The active account is resolved from `--account <name>` else the
+/// `STATUSLINE_ANT_ACCOUNT` env var (clear error if neither is set — D-18). Its
+/// `admin_key_command` argv is looked up in `[ant.accounts.<name>]`; if the
+/// account/table is absent OR the command is empty, a clear feature-absent error
+/// is returned and the process exits non-zero (D-02 — never a silent downgrade).
+/// On success the slice is written ONLY after BOTH endpoints succeed + parse
+/// (`fetch_usage` guarantees this — D-16), and (unless `quiet`) a KEY-FREE
+/// summary is printed (account, cache path, a credential-source LABEL, today/MTD
+/// USD totals + the `UTC` tz label). On any failure the differentiated error
+/// (401/403 taxonomy — D-17) propagates to `main` for a non-zero exit.
+fn sync_usage(quiet: bool, account_override: Option<String>) -> Result<()> {
+    let config = Config::load()?;
+
+    // Resolve the active account: --account override else STATUSLINE_ANT_ACCOUNT.
+    let account = account_override
+        .or_else(|| std::env::var("STATUSLINE_ANT_ACCOUNT").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            StatuslineError::other(
+                "no active ant account: pass --account <name> or set STATUSLINE_ANT_ACCOUNT",
+            )
+        })?;
+
+    // Look up the account's admin_key_command. Absent account / empty command =>
+    // feature-absent (D-02): a clear error + non-zero exit, never a silent skip.
+    let admin_key_command = match config.ant.accounts.get(&account) {
+        Some(acct) if !acct.admin_key_command.is_empty() => acct.admin_key_command.clone(),
+        Some(_) => {
+            return Err(StatuslineError::other(format!(
+                "ant account '{account}' has no admin_key_command configured \
+                 (add [ant.accounts.{account}].admin_key_command to enable usage sync)"
+            )));
+        }
+        None => {
+            return Err(StatuslineError::other(format!(
+                "ant account '{account}' is not configured \
+                 (add an [ant.accounts.{account}] table with admin_key_command)"
+            )));
+        }
+    };
+
+    // The ONLY network/subprocess/credential touchpoint for the usage path. The
+    // key is resolved + handed to curl via stdin inside fetch_usage; it never
+    // appears here, in the summary, or in any error.
+    let slice = crate::ant::usage::fetch_usage(&account, &admin_key_command)?;
+
+    // Publish the per-account slice (fetch already gated on both endpoints — D-16).
+    write_usage_cache(&slice)?;
+
+    if !quiet {
+        let path = usage_cache_path(&account)?;
+        println!("Synced usage & cost for ant account '{}'.", slice.account);
+        println!("Cache: {}", path.display());
+        // Credential SOURCE label only — never the key, never the raw argv (D-09/D-17).
+        println!("Credential source: admin_key_command (credential command)");
+        println!(
+            "Today: ${:.2} {tz}   MTD: ${:.2} {tz}",
+            slice.today_usd,
+            slice.mtd_usd,
+            tz = slice.tz
+        );
     }
 
     Ok(())
