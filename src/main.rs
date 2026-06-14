@@ -26,6 +26,7 @@ use std::env;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
+mod ant;
 mod commands;
 mod common;
 mod config;

@@ -51,6 +51,9 @@ pub struct Config {
 
     /// GSD project tracking configuration
     pub gsd: GsdConfig,
+
+    /// Ant (opt-in Claude API enrichment) configuration (default disabled, D-08)
+    pub ant: crate::ant::config::AntConfig,
 }
 
 /// Display-related configuration

@@ -30,6 +30,8 @@
 // TODO: Re-enable html_root_url once the crate is published on docs.rs
 // #![doc(html_root_url = "https://docs.rs/statusline/2.7.0")]
 
+/// Ant (opt-in Claude API enrichment) module: `[ant]` config + versioned model cache
+pub mod ant;
 pub mod common;
 /// Configuration management module for loading and saving settings
 pub mod config;
