@@ -12,7 +12,10 @@
 //!   read; the read path never creates a directory, never panics, never spawns).
 //! - [`fetch`] — the out-of-band `ant`/`curl` fetch (implemented in Plan 03;
 //!   declared here so Plan 03 only adds the file, never edits this module).
+//! - [`usage`] — the out-of-band org-admin usage/cost fetch (implemented in
+//!   08-02; declared here as a placeholder so the module graph is stable).
 
 pub mod cache;
 pub mod config;
 pub mod fetch;
+pub mod usage;
