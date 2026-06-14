@@ -1,0 +1,23 @@
+# .claudeignore — agent read exclusions for the `ant` model-metadata cache.
+#
+# Rationale (D-17 / ANT-04): the `ant` enrichment cache stores model metadata at
+#   ${XDG_CACHE_HOME:-~/.cache}/claudia-statusline/ant/models.json
+# Agents browsing this repository should not ingest a cache directory if one ever
+# appears *inside the project tree* — for example when the test suite points
+# XDG_CACHE_HOME at an isolated directory under the repo. The globs below exclude
+# any such in-tree ant cache (directory and contents) from agent reads.
+#
+# HONEST SCOPE NOTE: a repository-root .claudeignore can only govern paths inside
+# this repository. It CANNOT and DOES NOT protect the real user-home cache at
+# ~/.cache/claudia-statusline/ant/ (or the macOS ~/Library/Caches equivalent),
+# which lives OUTSIDE the repo and is therefore outside this file's reach. The
+# actual defense-in-depth for the real cache is structural, not this ignore file:
+#   1. The cache struct (src/ant/cache.rs) stores NO API key / secret field.
+#   2. The Admin/standard key is never logged or written to the cache (Plan 03).
+# This file is in-tree-test-cache hygiene only — do not read it as a guarantee
+# about files under the user's home directory.
+
+# In-tree ant model-metadata cache (e.g. tests with an isolated XDG_CACHE_HOME)
+**/claudia-statusline/ant/
+**/claudia-statusline/ant/**
+**/claudia-statusline/ant/models.json
