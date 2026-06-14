@@ -23,12 +23,14 @@ log_test() {
 
 log_pass() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((TESTS_PASSED++))
+    # Use arithmetic assignment, not ((x++)): under `set -e` the post-increment
+    # returns exit status 1 when the prior value is 0, aborting the script.
+    TESTS_PASSED=$((TESTS_PASSED + 1))
 }
 
 log_fail() {
     echo -e "${RED}[FAIL]${NC} $1"
-    ((TESTS_FAILED++))
+    TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
 log_info() {
@@ -80,9 +82,12 @@ else
 fi
 
 # Test 5: Test with model name
+# The statusline abbreviates model display names (see src/models.rs:
+# "Sonnet 4.5" -> "S4.5"), so assert on the abbreviated code, not the
+# literal family word.
 log_test "Testing with model name..."
-TEST_OUTPUT=$(echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"}}' | statusline 2>&1)
-if [ $? -eq 0 ] && echo "$TEST_OUTPUT" | grep -q "Sonnet"; then
+TEST_OUTPUT=$(echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet 4.5"}}' | statusline 2>&1)
+if [ $? -eq 0 ] && echo "$TEST_OUTPUT" | grep -q "S4.5"; then
     log_pass "Model name displayed correctly"
 else
     log_fail "Model name not displayed"
