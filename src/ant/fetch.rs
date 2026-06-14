@@ -254,9 +254,9 @@ fn fetch_page_ant(mode: &CredentialMode, after_id: Option<&str>) -> Result<Model
         CredentialMode::EnvKey | CredentialMode::DefaultAuth => {}
     }
 
-    let output = cmd.output().map_err(|e| {
-        StatuslineError::other(format!("failed to spawn `ant`: {}", e))
-    })?;
+    let output = cmd
+        .output()
+        .map_err(|e| StatuslineError::other(format!("failed to spawn `ant`: {}", e)))?;
 
     if !output.status.success() {
         let stderr = sanitize_stderr(&output.stderr);
@@ -301,9 +301,9 @@ fn fetch_page_curl(after_id: Option<&str>) -> Result<ModelsPage> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
-        StatuslineError::other(format!("failed to spawn `curl`: {}", e))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| StatuslineError::other(format!("failed to spawn `curl`: {}", e)))?;
 
     // Build the config in memory and stream it to stdin. The key is interpolated
     // into a HEADER line written to stdin ONLY — never into argv (T-07-08).
@@ -327,9 +327,9 @@ fn fetch_page_curl(after_id: Option<&str>) -> Result<ModelsPage> {
         // Drop closes stdin so curl proceeds; the key leaves memory here.
     }
 
-    let output = child.wait_with_output().map_err(|e| {
-        StatuslineError::other(format!("curl did not complete: {}", e))
-    })?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| StatuslineError::other(format!("curl did not complete: {}", e)))?;
 
     if !output.status.success() {
         let stderr = sanitize_stderr(&output.stderr);
@@ -342,10 +342,7 @@ fn fetch_page_curl(after_id: Option<&str>) -> Result<ModelsPage> {
                 "network error fetching the Models API (curl exit {}): {}",
                 code, stderr
             ),
-            22 => format!(
-                "HTTP error from the Models API (curl exit 22): {}",
-                stderr
-            ),
+            22 => format!("HTTP error from the Models API (curl exit 22): {}", stderr),
             _ => format!("curl failed (exit {}): {}", code, stderr),
         };
         return Err(StatuslineError::other(msg));
@@ -358,9 +355,8 @@ fn fetch_page_curl(after_id: Option<&str>) -> Result<ModelsPage> {
 /// failure to a DIFFERENTIATED parse error (D-13). The raw body is NOT echoed
 /// (it could be large / contain unexpected content); only the serde message.
 fn parse_page(stdout: &[u8]) -> Result<ModelsPage> {
-    serde_json::from_slice::<ModelsPage>(stdout).map_err(|e| {
-        StatuslineError::other(format!("failed to parse Models API JSON: {}", e))
-    })
+    serde_json::from_slice::<ModelsPage>(stdout)
+        .map_err(|e| StatuslineError::other(format!("failed to parse Models API JSON: {}", e)))
 }
 
 /// Whether an executable is resolvable on `PATH` (no spawn). Used to choose the
@@ -372,12 +368,11 @@ fn tool_on_path(tool: &str) -> bool {
     };
     std::env::split_paths(&path).any(|dir| {
         let candidate = dir.join(tool);
-        candidate.is_file()
-            || {
-                // On Unix an executable need not have an extension; is_file()
-                // covers it. Keep this branch for clarity/symmetry.
-                false
-            }
+        candidate.is_file() || {
+            // On Unix an executable need not have an extension; is_file()
+            // covers it. Keep this branch for clarity/symmetry.
+            false
+        }
     })
 }
 
@@ -469,16 +464,18 @@ mod tests {
 
         // ANT_PROFILE is set to the configured profile.
         let profile_set = cmd.get_envs().any(|(k, v)| {
-            k == std::ffi::OsStr::new("ANT_PROFILE")
-                && v == Some(std::ffi::OsStr::new("work"))
+            k == std::ffi::OsStr::new("ANT_PROFILE") && v == Some(std::ffi::OsStr::new("work"))
         });
         assert!(profile_set, "ANT_PROFILE must be set on the ant Command");
 
         // ANTHROPIC_API_KEY is explicitly removed (value None in the override map).
-        let key_removed = cmd.get_envs().any(|(k, v)| {
-            k == std::ffi::OsStr::new("ANTHROPIC_API_KEY") && v.is_none()
-        });
-        assert!(key_removed, "ANTHROPIC_API_KEY must be removed for profile mode");
+        let key_removed = cmd
+            .get_envs()
+            .any(|(k, v)| k == std::ffi::OsStr::new("ANTHROPIC_API_KEY") && v.is_none());
+        assert!(
+            key_removed,
+            "ANTHROPIC_API_KEY must be removed for profile mode"
+        );
 
         // No argv token contains a key value.
         let args_have_key = cmd
@@ -509,7 +506,7 @@ mod tests {
         let page2 = parse_page(p2).unwrap();
 
         let mut models: HashMap<String, ModelEntry> = HashMap::new();
-        for m in page1.data.into_iter().chain(page2.data.into_iter()) {
+        for m in page1.data.into_iter().chain(page2.data) {
             models.insert(
                 m.id,
                 ModelEntry {
