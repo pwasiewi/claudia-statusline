@@ -253,7 +253,11 @@ pub struct UsageCache {
 /// separator or over-length is **rejected** (never silently rewritten — so the
 /// writer and reader always agree on the path; RESEARCH Pitfall 5 / T-08-PT).
 /// Returns the validated owned name on success.
-pub(crate) fn sanitize_account_name(name: &str) -> Result<String> {
+///
+/// `pub` (not `pub(crate)`) so the external integration test
+/// `tests/ant_usage_tests.rs::sanitize_account_name` — a separate crate — can
+/// exercise it directly, mirroring the existing `pub` `models_*` cache surface.
+pub fn sanitize_account_name(name: &str) -> Result<String> {
     use crate::error::StatuslineError;
 
     if name.is_empty() {
