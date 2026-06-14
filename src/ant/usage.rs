@@ -244,14 +244,24 @@ pub fn utc_windows(now: chrono::DateTime<Utc>) -> UtcWindows {
         .and_time(NaiveTime::MIN)
         .and_utc();
 
+    // Emit the `Z`-suffixed UTC form, NOT chrono's `to_rfc3339()` (which renders
+    // a UTC instant with a `+00:00` offset). These values are appended verbatim to
+    // the Admin API query string in `fetch_report`; a `+` is URL-reserved and is
+    // decoded server-side as a space, corrupting the timestamp (CR-01). `Z` is
+    // the canonical zero-offset form and contains no URL-reserved characters that
+    // change meaning in a query value.
+    fn z_utc(dt: chrono::DateTime<Utc>) -> String {
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    }
+
     UtcWindows {
         today: UtcWindow {
-            starting_at: midnight_today.to_rfc3339(),
-            ending_at: midnight_tomorrow.to_rfc3339(),
+            starting_at: z_utc(midnight_today),
+            ending_at: z_utc(midnight_tomorrow),
         },
         mtd: UtcWindow {
-            starting_at: first_of_month.to_rfc3339(),
-            ending_at: midnight_tomorrow.to_rfc3339(),
+            starting_at: z_utc(first_of_month),
+            ending_at: z_utc(midnight_tomorrow),
         },
     }
 }
@@ -645,9 +655,22 @@ mod tests {
             "both windows share the exclusive midnight-tomorrow end"
         );
 
-        // Both render as RFC3339 (chrono `to_rfc3339` always includes an offset).
-        assert!(w.today.starting_at.contains('T'));
-        assert!(w.mtd.starting_at.contains('T'));
+        // Regression (CR-01): windows MUST be emitted in the `Z`-suffixed UTC form,
+        // never with a `+00:00` offset — the value is appended raw to the Admin API
+        // query string, and a `+` is decoded server-side as a space, corrupting the
+        // timestamp. Assert the exact rendering and that no `+` offset leaks in.
+        assert_eq!(w.today.starting_at, "2026-06-14T00:00:00Z");
+        assert_eq!(w.today.ending_at, "2026-06-15T00:00:00Z");
+        assert_eq!(w.mtd.starting_at, "2026-06-01T00:00:00Z");
+        for ts in [
+            &w.today.starting_at,
+            &w.today.ending_at,
+            &w.mtd.starting_at,
+            &w.mtd.ending_at,
+        ] {
+            assert!(ts.ends_with('Z'), "must be Z-suffixed UTC: {ts}");
+            assert!(!ts.contains('+'), "must not carry a +offset: {ts}");
+        }
     }
 
     // RFC3339 token (with ':') accepted; injection / over-len / empty rejected.
