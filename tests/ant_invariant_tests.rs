@@ -123,6 +123,100 @@ fn golden_byte_identical_lib_rs_path() {
 }
 
 // ---------------------------------------------------------------------------
+// Group 1b: {api_*}-ABSENT byte-identical (enabled-but-sliceless, both paths)
+// ---------------------------------------------------------------------------
+//
+// Phase 08 wires opt-in `{api_*}` usage variables (08-03). The hard invariant is
+// that referencing NOTHING changes output: with `[ant]` enabled but NO usage
+// slice present (and/or `STATUSLINE_ANT_ACCOUNT` unset), both render paths must
+// STILL be byte-identical to the v3.1.0 golden — because the default layout does
+// not reference any `{api_*}` var AND the present-only builder inserts nothing
+// when the slice is absent. (The plain disabled-default case is already covered
+// by `golden_byte_identical_main_rs_path`/`golden_byte_identical_lib_rs_path`.)
+
+/// Write a config file enabling `[ant]` and return a guard temp dir. The render
+/// MUST still match the golden because there is no usage slice to surface and the
+/// default layout references no `{api_*}` variable.
+fn ant_enabled_config() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::TempDir::new().expect("config temp dir");
+    let cfg = dir.path().join("config.toml");
+    std::fs::write(&cfg, "[ant]\nenabled = true\n").expect("write ant-enabled config");
+    (dir, cfg)
+}
+
+#[test]
+#[serial]
+fn golden_byte_identical_main_rs_path_ant_enabled_sliceless() {
+    let _guard = test_support::init();
+    let (_cfg_dir, cfg) = ant_enabled_config();
+    // A HOME with no usage cache => the active account's slice can never load.
+    let home = tempfile::TempDir::new().expect("isolated home");
+
+    let output = Command::new(test_support::test_binary())
+        .env("NO_COLOR", "1")
+        .env("STATUSLINE_CONFIG", &cfg)
+        // Even WITH an account selected, no slice exists on disk => absent.
+        .env("STATUSLINE_ANT_ACCOUNT", "work")
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(FIXED_PAYLOAD.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success(), "render must exit 0");
+    let expected = read_fixture();
+    assert_eq!(
+        output.stdout, expected,
+        "main.rs render with [ant] enabled but NO usage slice must be byte-identical to v3.1.0"
+    );
+}
+
+#[test]
+#[serial]
+fn golden_byte_identical_lib_rs_path_ant_enabled_sliceless() {
+    let _guard = test_support::init();
+    let (_cfg_dir, cfg) = ant_enabled_config();
+    let home = tempfile::TempDir::new().expect("isolated home");
+
+    std::env::set_var("NO_COLOR", "1");
+    std::env::set_var("STATUSLINE_CONFIG", &cfg);
+    std::env::set_var("STATUSLINE_ANT_ACCOUNT", "work");
+    let orig_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", home.path());
+    statusline::config::reset_config();
+
+    let rendered = statusline::render_from_json(FIXED_PAYLOAD, false)
+        .expect("render_statusline must not fail (SC1: never fails)");
+
+    // Restore env before asserting so a failure can't poison later serial tests.
+    std::env::remove_var("NO_COLOR");
+    std::env::remove_var("STATUSLINE_CONFIG");
+    std::env::remove_var("STATUSLINE_ANT_ACCOUNT");
+    match orig_home {
+        Some(h) => std::env::set_var("HOME", h),
+        None => std::env::remove_var("HOME"),
+    }
+    statusline::config::reset_config();
+
+    let expected = read_fixture();
+    assert_eq!(
+        rendered.as_bytes(),
+        expected.as_slice(),
+        "lib.rs render with [ant] enabled but NO usage slice must be byte-identical to v3.1.0"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Group 2: FAKE-EXEC NO-SPAWN (markers prove no ant/curl enrichment subprocess)
 // ---------------------------------------------------------------------------
 
@@ -204,6 +298,65 @@ fn fake_exec_no_enrichment_subprocess_spawned() {
     assert_eq!(
         output.stdout, expected,
         "render under fake ant/curl PATH must still match the v3.1.0 golden fixture"
+    );
+}
+
+#[test]
+#[serial]
+#[cfg(unix)]
+fn fake_exec_no_spawn_with_ant_enabled_but_sliceless() {
+    // Strongest no-spawn case: `[ant].enabled = true` AND an account selected, but
+    // no usage slice on disk. The render path must STILL spawn no ant/curl — it
+    // only ever reads the cache via the total `read_usage_cache` (D-16/ANT-02).
+    let _guard = test_support::init();
+    let (bin_dir, marker_dir) = make_fake_execs();
+    let (_cfg_dir, cfg) = ant_enabled_config();
+    let home = tempfile::TempDir::new().expect("isolated home");
+
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), orig_path);
+
+    let output = Command::new(test_support::test_binary())
+        .env("NO_COLOR", "1")
+        .env("PATH", &new_path)
+        .env("STATUSLINE_CONFIG", &cfg)
+        .env("STATUSLINE_ANT_ACCOUNT", "work")
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(FIXED_PAYLOAD.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(
+        output.status.success(),
+        "render must still exit 0 with [ant] enabled + fake PATH"
+    );
+
+    let ant_marker = marker_dir.path().join("ant.invoked");
+    let curl_marker = marker_dir.path().join("curl.invoked");
+    assert!(
+        !ant_marker.exists(),
+        "render with [ant] enabled but sliceless must NOT spawn `ant`"
+    );
+    assert!(
+        !curl_marker.exists(),
+        "render with [ant] enabled but sliceless must NOT spawn `curl`"
+    );
+
+    let expected = read_fixture();
+    assert_eq!(
+        output.stdout, expected,
+        "render with [ant] enabled but no slice must still match the v3.1.0 golden"
     );
 }
 

@@ -188,6 +188,84 @@ fn test_render_minimal_input() {
 }
 
 #[test]
+#[serial_test::serial]
+fn api_usage_renders_via_library() {
+    // Proves the SINGLE display.rs api_usage wiring reaches the LIBRARY render path
+    // (render_from_json): with `[ant]` enabled, STATUSLINE_ANT_ACCOUNT set, and a
+    // per-account usage slice on disk, a custom layout template referencing
+    // `{api_cost_today}`/`{api_account}` renders the cached values (Pitfall 6).
+    let _lock = ENV_MUTEX.lock().unwrap();
+
+    // Isolate the cache + config dirs under a tempdir HOME so the slice lands where
+    // the production `read_usage_cache` (via `dirs::cache_dir()`) will read it.
+    let home = tempfile::tempdir().unwrap();
+    let orig_home = std::env::var_os("HOME");
+    let orig_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
+
+    // Compute the cache dir the SAME way production does (dirs::cache_dir()), then
+    // write a schema-v1 usage slice for account "work".
+    let cache_root = dirs::cache_dir().expect("cache dir resolvable");
+    let usage_dir = cache_root
+        .join("claudia-statusline")
+        .join("ant")
+        .join("usage");
+    std::fs::create_dir_all(&usage_dir).unwrap();
+    let slice = r#"{
+        "schema_version": 1,
+        "fetched_at": "2026-06-14T00:00:00Z",
+        "account": "work",
+        "today_usd": 12.5,
+        "mtd_usd": 340.0,
+        "tz": "UTC",
+        "tokens_by_model": {}
+    }"#;
+    std::fs::write(usage_dir.join("work.json"), slice).unwrap();
+
+    // Config file: enable [ant] and use a custom layout referencing the api vars.
+    let cfg = home.path().join("config.toml");
+    std::fs::write(
+        &cfg,
+        "[ant]\nenabled = true\n\n[layout]\nformat = \"{api_cost_today} {api_account}\"\n",
+    )
+    .unwrap();
+
+    let orig_cfg = std::env::var_os("STATUSLINE_CONFIG");
+    let orig_acct = std::env::var_os("STATUSLINE_ANT_ACCOUNT");
+    std::env::set_var("STATUSLINE_CONFIG", &cfg);
+    std::env::set_var("STATUSLINE_ANT_ACCOUNT", "work");
+    std::env::set_var("NO_COLOR", "1");
+    statusline::config::reset_config();
+
+    let json =
+        r#"{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude 3.5 Sonnet"}}"#;
+    let result = render_from_json(json, false);
+
+    // Restore env before asserting so a failure cannot poison later serial tests.
+    let restore = |key: &str, val: Option<std::ffi::OsString>| match val {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    };
+    restore("HOME", orig_home);
+    restore("XDG_CACHE_HOME", orig_xdg_cache);
+    restore("STATUSLINE_CONFIG", orig_cfg);
+    restore("STATUSLINE_ANT_ACCOUNT", orig_acct);
+    std::env::remove_var("NO_COLOR");
+    statusline::config::reset_config();
+
+    let output = result.expect("render must succeed");
+    assert!(
+        output.contains("$12.50"),
+        "library render must surface {{api_cost_today}} = $12.50, got: {output:?}"
+    );
+    assert!(
+        output.contains("work"),
+        "library render must surface {{api_account}} = work, got: {output:?}"
+    );
+}
+
+#[test]
 fn test_render_invalid_json() {
     let json = r#"{ invalid json }"#;
 

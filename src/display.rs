@@ -1024,17 +1024,43 @@ pub fn format_output_to_string(
     session_id: Option<&str>,
     extras: PayloadExtras,
 ) -> String {
-    let config = config::get_config();
-    format_statusline_string(
-        current_dir,
-        model_name,
-        transcript_path,
-        cost,
-        daily_total,
-        session_id,
-        extras,
-        &config.display,
-    )
+    let full_config = config::get_config();
+
+    // Mirror the binary print path (`format_output_with_config`): when a custom
+    // layout is configured (non-empty format OR a non-default preset), route
+    // through the layout-template system so the LIBRARY render path honors the
+    // same opt-in template variables ({api_*}, {effort}, {rate_limits}, ...) the
+    // binary does. Previously this function always used `format_statusline_string`,
+    // so the lib path silently ignored a user-configured layout AND never reached
+    // the shared `api_usage`/`session_meta` wiring — a main↔lib divergence
+    // (CLAUDE.md high-blast-radius note). Routing identically here is what makes
+    // the single display.rs wiring reach BOTH render paths (Pitfall 6).
+    let use_layout_system = !full_config.layout.format.is_empty()
+        || full_config.layout.preset.to_lowercase() != "default";
+
+    if use_layout_system {
+        format_statusline_with_layout(
+            current_dir,
+            model_name,
+            transcript_path,
+            cost,
+            daily_total,
+            session_id,
+            extras,
+            &full_config.layout,
+        )
+    } else {
+        format_statusline_string(
+            current_dir,
+            model_name,
+            transcript_path,
+            cost,
+            daily_total,
+            session_id,
+            extras,
+            &full_config.display,
+        )
+    }
 }
 
 /// Generate just the raw progress bar without colors (e.g., "[====>-----]")
