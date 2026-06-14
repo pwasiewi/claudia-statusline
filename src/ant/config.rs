@@ -35,6 +35,10 @@ pub struct AntConfig {
     pub profile: String,
 }
 
+// The manual impl is intentional (and mirrors `GsdConfig`): it makes the
+// security-relevant D-08 default — `enabled = false` (opt-in) — explicit at the
+// definition site rather than implied by the field type's derived default.
+#[allow(clippy::derivable_impls)]
 impl Default for AntConfig {
     fn default() -> Self {
         Self {
