@@ -24,6 +24,72 @@ pub struct StatuslineInput {
     pub transcript: Option<String>,
     /// Cost and metrics information
     pub cost: Option<Cost>,
+    /// Live context-window usage from the most recent API response.
+    ///
+    /// Present in modern Claude Code payloads (token counts reflect *current*
+    /// context since CC v2.1.132; cumulative before that). Preferred over our
+    /// transcript-derived estimate when present and populated.
+    pub context_window: Option<ContextWindow>,
+    /// Claude.ai (Pro/Max) rate-limit windows. Absent for API-key usage and
+    /// before the first API response in a session.
+    pub rate_limits: Option<RateLimits>,
+}
+
+/// Live context-window usage reported directly by Claude Code.
+///
+/// Mirrors the `context_window` object in the statusline JSON payload. All
+/// fields are optional/nullable: `current_usage` is `null` before the first API
+/// call and immediately after `/compact`; the percentages may be `null` early
+/// in a session.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContextWindow {
+    /// Input tokens currently in context (input + cache create + cache read).
+    pub total_input_tokens: Option<u64>,
+    /// Output tokens from the most recent response.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub total_output_tokens: Option<u64>,
+    /// Maximum context window size in tokens (200000, or 1000000 for 1M models).
+    pub context_window_size: Option<u64>,
+    /// Pre-calculated percentage of the context window used (input-only basis).
+    pub used_percentage: Option<f64>,
+    /// Pre-calculated percentage of the context window remaining.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub remaining_percentage: Option<f64>,
+    /// Per-component token breakdown for the last API call.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub current_usage: Option<ContextCurrentUsage>,
+}
+
+/// Per-component token counts from the last API call (`current_usage`).
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Public API - parsed for library consumers
+pub struct ContextCurrentUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_creation_input_tokens: Option<u64>,
+    pub cache_read_input_tokens: Option<u64>,
+}
+
+/// Claude.ai subscription rate-limit windows (`rate_limits`).
+///
+/// Each window may be independently absent. This is the same data ccusage/ccburn
+/// read to compute real-time burn rate against the active billing block.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimits {
+    /// Rolling 5-hour billing block.
+    pub five_hour: Option<RateLimitWindow>,
+    /// Rolling 7-day (weekly) window.
+    pub seven_day: Option<RateLimitWindow>,
+}
+
+/// A single rate-limit window.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitWindow {
+    /// Percentage of the window consumed, 0–100.
+    pub used_percentage: Option<f64>,
+    /// Unix epoch seconds when the window resets.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub resets_at: Option<i64>,
 }
 
 /// Workspace information from Claude Code.
@@ -42,12 +108,26 @@ pub struct Workspace {
 pub struct Model {
     /// Display name of the Claude model (e.g., "Claude 3.5 Sonnet")
     pub display_name: Option<String>,
+    /// Canonical model identifier (e.g., "claude-opus-4-8", "claude-fable-5")
+    ///
+    /// Present in modern Claude Code payloads and more reliable for model
+    /// detection than `display_name` (which may be just "Opus" with no version).
+    pub id: Option<String>,
+}
+
+impl Model {
+    /// Returns the best string for model detection, preferring the canonical
+    /// `id` (e.g. "claude-opus-4-8") over `display_name` (e.g. "Opus"). The id
+    /// carries the version, so it yields a more specific abbreviation.
+    pub fn detection_name(&self) -> Option<&str> {
+        self.id.as_deref().or(self.display_name.as_deref())
+    }
 }
 
 /// Cost and metrics information.
 ///
 /// Tracks the total cost in USD and code change metrics for the current session.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Cost {
     /// Total cost in USD for the session
     pub total_cost_usd: Option<f64>,
@@ -55,6 +135,12 @@ pub struct Cost {
     pub total_lines_added: Option<u64>,
     /// Total lines of code removed
     pub total_lines_removed: Option<u64>,
+    /// Total wall-clock time since the session started, in milliseconds.
+    /// Authoritative source for session duration in modern payloads.
+    pub total_duration_ms: Option<u64>,
+    /// Total time spent waiting for API responses, in milliseconds.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub total_api_duration_ms: Option<u64>,
 }
 
 /// Token usage breakdown from transcript.
@@ -109,6 +195,10 @@ impl ModelType {
             "Sonnet"
         } else if lower.contains("haiku") {
             "Haiku"
+        } else if lower.contains("fable") {
+            "Fable"
+        } else if lower.contains("mythos") {
+            "Mythos"
         } else {
             return ModelType::Unknown;
         };
@@ -174,6 +264,20 @@ impl ModelType {
                             "Haiku".to_string()
                         } else {
                             format!("H{}", version)
+                        }
+                    }
+                    "Fable" => {
+                        if version.is_empty() {
+                            "Fable".to_string()
+                        } else {
+                            format!("F{}", version)
+                        }
+                    }
+                    "Mythos" => {
+                        if version.is_empty() {
+                            "Mythos".to_string()
+                        } else {
+                            format!("M{}", version)
                         }
                     }
                     _ => family.clone(),
@@ -372,6 +476,118 @@ mod tests {
 
         // Test unknown
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
+    }
+
+    #[test]
+    fn test_parse_modern_payload_fields() {
+        // Full modern Claude Code payload (subset of fields)
+        let json = r#"{
+            "model": {"id": "claude-opus-4-8", "display_name": "Opus"},
+            "cost": {
+                "total_cost_usd": 0.01234,
+                "total_duration_ms": 45000,
+                "total_api_duration_ms": 2300,
+                "total_lines_added": 156,
+                "total_lines_removed": 23
+            },
+            "context_window": {
+                "total_input_tokens": 15500,
+                "total_output_tokens": 1200,
+                "context_window_size": 200000,
+                "used_percentage": 8,
+                "remaining_percentage": 92,
+                "current_usage": {
+                    "input_tokens": 8500,
+                    "output_tokens": 1200,
+                    "cache_creation_input_tokens": 5000,
+                    "cache_read_input_tokens": 2000
+                }
+            },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 23.5, "resets_at": 1738425600},
+                "seven_day": {"used_percentage": 41.2, "resets_at": 1738857600}
+            }
+        }"#;
+        let input: StatuslineInput = serde_json::from_str(json).unwrap();
+
+        let cost = input.cost.unwrap();
+        assert_eq!(cost.total_duration_ms, Some(45000));
+        assert_eq!(cost.total_api_duration_ms, Some(2300));
+
+        let cw = input.context_window.unwrap();
+        assert_eq!(cw.context_window_size, Some(200000));
+        assert_eq!(cw.used_percentage, Some(8.0));
+        assert_eq!(
+            cw.current_usage.unwrap().cache_read_input_tokens,
+            Some(2000)
+        );
+
+        let rl = input.rate_limits.unwrap();
+        assert_eq!(rl.five_hour.as_ref().unwrap().used_percentage, Some(23.5));
+        assert_eq!(rl.five_hour.unwrap().resets_at, Some(1738425600));
+        assert_eq!(rl.seven_day.unwrap().used_percentage, Some(41.2));
+    }
+
+    #[test]
+    fn test_modern_fields_absent_is_ok() {
+        // Legacy payload without the new fields still parses; new fields are None
+        let json = r#"{"model": {"display_name": "Claude Sonnet"}, "cost": {}}"#;
+        let input: StatuslineInput = serde_json::from_str(json).unwrap();
+        assert!(input.context_window.is_none());
+        assert!(input.rate_limits.is_none());
+        assert!(input.cost.unwrap().total_duration_ms.is_none());
+    }
+
+    #[test]
+    fn test_fable_and_mythos_detection() {
+        // Fable 5 from canonical id and from display name
+        let fable_id = ModelType::from_name("claude-fable-5");
+        assert!(
+            matches!(&fable_id, ModelType::Model { family, version } if family == "Fable" && version == "5")
+        );
+        assert_eq!(fable_id.abbreviation(), "F5");
+        assert_eq!(fable_id.canonical_name(), "Fable 5");
+        assert_eq!(fable_id.family(), "Fable");
+
+        assert_eq!(ModelType::from_name("Claude Fable 5").abbreviation(), "F5");
+
+        // Mythos 5 (Project Glasswing)
+        let mythos = ModelType::from_name("claude-mythos-5");
+        assert!(
+            matches!(&mythos, ModelType::Model { family, version } if family == "Mythos" && version == "5")
+        );
+        assert_eq!(mythos.abbreviation(), "M5");
+        assert_eq!(mythos.canonical_name(), "Mythos 5");
+
+        // No-version fallbacks
+        assert_eq!(ModelType::from_name("Fable").abbreviation(), "Fable");
+        assert_eq!(ModelType::from_name("Mythos").abbreviation(), "Mythos");
+    }
+
+    #[test]
+    fn test_model_id_field_and_detection_name() {
+        // detection_name prefers id over display_name
+        let model = Model {
+            display_name: Some("Opus".to_string()),
+            id: Some("claude-opus-4-8".to_string()),
+        };
+        assert_eq!(model.detection_name(), Some("claude-opus-4-8"));
+        assert_eq!(
+            ModelType::from_name(model.detection_name().unwrap()).abbreviation(),
+            "O4.8"
+        );
+
+        // Falls back to display_name when id absent
+        let legacy = Model {
+            display_name: Some("Claude 3.5 Sonnet".to_string()),
+            id: None,
+        };
+        assert_eq!(legacy.detection_name(), Some("Claude 3.5 Sonnet"));
+
+        // Parses id from JSON
+        let json = r#"{"display_name": "Opus", "id": "claude-opus-4-8"}"#;
+        let parsed: Model = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.id.as_deref(), Some("claude-opus-4-8"));
     }
 
     #[test]

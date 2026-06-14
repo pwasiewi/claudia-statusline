@@ -433,11 +433,15 @@ fn main() -> Result<()> {
     // Format and print output
     format_output(
         &current_dir,
-        input.model.as_ref().and_then(|m| m.display_name.as_deref()),
+        input.model.as_ref().and_then(|m| m.detection_name()),
         input.transcript.as_deref(),
         input.cost.as_ref(),
         daily_total,
         input.session_id.as_deref(),
+        display::PayloadExtras {
+            context_window: input.context_window.as_ref(),
+            rate_limits: input.rate_limits.as_ref(),
+        },
     );
 
     Ok(())
