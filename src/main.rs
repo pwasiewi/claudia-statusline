@@ -196,6 +196,22 @@ enum Commands {
         #[command(subcommand)]
         action: HookAction,
     },
+
+    /// Anthropic API enrichment (opt-in, out-of-band)
+    Ant {
+        #[command(subcommand)]
+        action: AntAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AntAction {
+    /// Fetch the Models API and cache context windows
+    SyncModels {
+        /// Run in quiet mode (suppress the summary; errors still print)
+        #[arg(short, long)]
+        quiet: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -390,6 +406,10 @@ fn main() -> Result<()> {
 
             Commands::Hook { action } => {
                 return commands::hooks::handle_hook_command(action);
+            }
+
+            Commands::Ant { action } => {
+                return commands::ant::handle_ant_command(action);
             }
         }
     }
