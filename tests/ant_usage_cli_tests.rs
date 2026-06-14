@@ -163,6 +163,28 @@ impl UsageEnv {
     }
 }
 
+/// Recursively search for a specifically-named `*.json` under an `ant/usage/`
+/// directory below `root` (e.g. `a.json`, `b.json`).
+fn find_named_usage_json(root: &Path, file_name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if let Some(found) = find_named_usage_json(&p, file_name) {
+                return Some(found);
+            }
+        } else if p.file_name().map(|n| n == file_name).unwrap_or(false)
+            && p.parent()
+                .and_then(|d| d.file_name())
+                .map(|n| n == "usage")
+                .unwrap_or(false)
+        {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Recursively search for any `*.json` under an `ant/usage/` directory below `root`.
 fn find_usage_json(root: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
@@ -184,52 +206,233 @@ fn find_usage_json(root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// A canned body valid as BOTH a cost envelope (`results[].amount`) and a usage
+/// envelope (`results[].model` + token fields). The fake curl returns it for
+/// every endpoint; unknown fields are ignored by each parser.
+const FAKE_BODY: &str = "{\"data\":[{\"results\":[{\"amount\":\"500\",\"model\":\"opus\",\"uncached_input_tokens\":100,\"output_tokens\":40}]}],\"has_more\":false}";
+
+/// Build an `[ant]` config that maps account `name` to a fake `admin_key_command`
+/// (the fake key-printer installed under our controlled bin dir).
+fn ant_config_with_account(name: &str, key_cmd: &str) -> String {
+    format!("[ant]\nenabled = true\n\n[ant.accounts.{name}]\nadmin_key_command = [\"{key_cmd}\"]\n")
+}
+
 // ---------------------------------------------------------------------------
-// STUB (08-02): both endpoints succeed -> the per-account usage cache is written
+// REAL (08-02): both endpoints succeed -> the per-account usage cache is written
 // (all-or-nothing two-endpoint gate). VALIDATION.md row `sync_usage_writes_after_both`.
 // ---------------------------------------------------------------------------
 #[test]
 #[serial]
-#[ignore = "wave 0 stub — 08-02"]
 fn sync_usage_writes_after_both() {
-    let _env = UsageEnv::new("[ant]\nenabled = true\n");
-    todo!("implemented in 08-02");
+    let env = UsageEnv::new(&ant_config_with_account("work", "fake-admin-key-cmd"));
+    env.install_fake_admin_key("fake-admin-key-cmd", "sk-ant-admin01-FAKE");
+    let stdin_capture = env.home.path().join("curl_stdin.log");
+    env.install_fake_curl(&stdin_capture, FAKE_BODY);
+
+    let (ok, stdout, stderr) = env.run(&env.system_path(), None, Some("work"), false);
+    assert!(ok, "sync must exit 0; stderr={stderr}");
+
+    let cache = env
+        .find_usage_cache()
+        .expect("usage/work.json must be written after both endpoints");
+    assert!(
+        cache.ends_with("usage/work.json"),
+        "wrong cache path: {cache:?}"
+    );
+    let content = fs::read_to_string(&cache).expect("read cache");
+    // amount "500" cents summed (today + MTD both fetch the fake) => $5.00 per window.
+    assert!(
+        content.contains("\"today_usd\""),
+        "today_usd present: {content}"
+    );
+    assert!(
+        content.contains("\"mtd_usd\""),
+        "mtd_usd present: {content}"
+    );
+    assert!(
+        content.contains("opus"),
+        "by-model tokens present: {content}"
+    );
+    assert!(content.contains("\"tz\""), "tz label present: {content}");
+    // The summary prints totals but never the key.
+    assert!(!stdout.contains("sk-ant-"), "no key in summary: {stdout}");
+    assert!(
+        stdout.contains("work"),
+        "summary names the account: {stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// STUB (08-02): 401 (bad key) vs 403 (non-admin/unsupported account) produce
+// REAL (08-02): 401 (bad key) vs 403 (non-admin/unsupported account) produce
 // DIFFERENTIATED, key-free messages + non-zero exit + no cache.
 // VALIDATION.md row `degrades_401_403_differentiated`.
 // ---------------------------------------------------------------------------
 #[test]
 #[serial]
-#[ignore = "wave 0 stub — 08-02"]
 fn degrades_401_403_differentiated() {
-    let _env = UsageEnv::new("[ant]\nenabled = true\n");
-    todo!("implemented in 08-02");
+    // Case 401: fake curl exits 22 (--fail-with-body) and writes a trailing
+    // "\n401" (the --write-out %{http_code}).
+    {
+        let env = UsageEnv::new(&ant_config_with_account("work", "fake-admin-key-cmd"));
+        env.install_fake_admin_key("fake-admin-key-cmd", "sk-ant-admin01-FAKE");
+        // Emit a body then the trailing http_code, then exit 22.
+        env.install_fake(
+            "curl",
+            &format!(
+                "echo \"ARGV: $@\" >> \"{rec}\"\n\
+                 cat > /dev/null\n\
+                 printf '%s\\n401' '{{\"error\":\"unauthorized\"}}'\n\
+                 exit 22\n",
+                rec = env.record.display(),
+            ),
+        );
+
+        let (ok, _stdout, stderr) = env.run(&env.system_path(), None, Some("work"), false);
+        assert!(!ok, "401 must exit non-zero");
+        assert!(
+            stderr.contains("invalid or expired") || stderr.contains("401"),
+            "401 wording: {stderr}"
+        );
+        assert!(
+            !stderr.contains("lacks Admin API access"),
+            "must not be the 403 wording"
+        );
+        assert!(
+            !stderr.contains("sk-ant-"),
+            "no key in 401 message: {stderr}"
+        );
+        assert!(
+            env.find_usage_cache().is_none(),
+            "no cache may be written on 401 (all-or-nothing)"
+        );
+    }
+
+    // Case 403: same shape, trailing "\n403".
+    {
+        let env = UsageEnv::new(&ant_config_with_account("work", "fake-admin-key-cmd"));
+        env.install_fake_admin_key("fake-admin-key-cmd", "sk-ant-admin01-FAKE");
+        env.install_fake(
+            "curl",
+            &format!(
+                "echo \"ARGV: $@\" >> \"{rec}\"\n\
+                 cat > /dev/null\n\
+                 printf '%s\\n403' '{{\"error\":\"forbidden\"}}'\n\
+                 exit 22\n",
+                rec = env.record.display(),
+            ),
+        );
+
+        let (ok, _stdout, stderr) = env.run(&env.system_path(), None, Some("work"), false);
+        assert!(!ok, "403 must exit non-zero");
+        assert!(
+            stderr.contains("lacks Admin API access"),
+            "403 wording: {stderr}"
+        );
+        assert!(
+            !stderr.contains("invalid or expired"),
+            "must not be the 401 wording"
+        );
+        assert!(
+            !stderr.contains("sk-ant-"),
+            "no key in 403 message: {stderr}"
+        );
+        assert!(
+            env.find_usage_cache().is_none(),
+            "no cache may be written on 403 (all-or-nothing)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
-// STUB (08-02): syncing one account writes ONLY its own usage/<name>.json and
+// REAL (08-02): syncing one account writes ONLY its own usage/<name>.json and
 // never clobbers another account's slice (D-10 single-file write).
 // VALIDATION.md row `per_account_no_bleed`.
 // ---------------------------------------------------------------------------
 #[test]
 #[serial]
-#[ignore = "wave 0 stub — 08-02"]
 fn per_account_no_bleed() {
-    let _env = UsageEnv::new("[ant]\nenabled = true\n");
-    todo!("implemented in 08-02");
+    // One config carries two accounts, each with its own (fake) key command.
+    let config = "[ant]\nenabled = true\n\n\
+         [ant.accounts.a]\nadmin_key_command = [\"fake-key-a\"]\n\n\
+         [ant.accounts.b]\nadmin_key_command = [\"fake-key-b\"]\n";
+    let env = UsageEnv::new(config);
+    env.install_fake_admin_key("fake-key-a", "sk-ant-admin01-A");
+    env.install_fake_admin_key("fake-key-b", "sk-ant-admin01-B");
+    let stdin_capture = env.home.path().join("curl_stdin.log");
+    env.install_fake_curl(&stdin_capture, FAKE_BODY);
+
+    // Sync account a.
+    let (ok_a, _o, e_a) = env.run(&env.system_path(), None, Some("a"), true);
+    assert!(ok_a, "sync a must succeed; stderr={e_a}");
+    let path_a = find_named_usage_json(env.home.path(), "a.json")
+        .expect("a.json must exist after syncing a");
+    let a_before = fs::read_to_string(&path_a).expect("read a.json");
+
+    // Sync account b.
+    let (ok_b, _o2, e_b) = env.run(&env.system_path(), None, Some("b"), true);
+    assert!(ok_b, "sync b must succeed; stderr={e_b}");
+    let path_b = find_named_usage_json(env.home.path(), "b.json")
+        .expect("b.json must exist after syncing b");
+
+    // a.json is unchanged (syncing b did not clobber a's slice — D-10).
+    let a_after = fs::read_to_string(&path_a).expect("re-read a.json");
+    assert_eq!(a_before, a_after, "syncing b must not modify a.json");
+    // Each slice records its own account label.
+    assert!(
+        a_after.contains("\"account\": \"a\""),
+        "a.json names a: {a_after}"
+    );
+    let b_content = fs::read_to_string(&path_b).expect("read b.json");
+    assert!(
+        b_content.contains("\"account\": \"b\""),
+        "b.json names b: {b_content}"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// STUB (08-02): the org-admin key never appears in curl argv (it arrives via the
-// leak-free STDIN config). VALIDATION.md row `no_key_in_argv` / T-08-KEY.
+// REAL (08-02): the org-admin key never appears in curl argv NOR the credential
+// command argv (it arrives via the leak-free STDIN config). VALIDATION.md row
+// `no_key_in_argv` / T-08-KEY.
 // ---------------------------------------------------------------------------
 #[test]
 #[serial]
-#[ignore = "wave 0 stub — 08-02"]
 fn no_key_in_argv() {
-    let _env = UsageEnv::new("[ant]\nenabled = true\n");
-    todo!("implemented in 08-02");
+    let env = UsageEnv::new(&ant_config_with_account("work", "fake-admin-key-cmd"));
+    let fake_key = "sk-ant-admin01-LEAKCHECK";
+    // The fake admin_key_command records its OWN argv too, so we can assert the
+    // key never appears there (the key is the command's OUTPUT, not its argv).
+    env.install_fake(
+        "fake-admin-key-cmd",
+        &format!(
+            "echo \"KEYCMD_ARGV: $@\" >> \"{rec}\"\n\
+             printf '%s' '{key}'\n\
+             exit 0\n",
+            rec = env.record.display(),
+            key = fake_key,
+        ),
+    );
+    let stdin_capture = env.home.path().join("curl_stdin.log");
+    env.install_fake_curl(&stdin_capture, FAKE_BODY);
+
+    let (ok, stdout, stderr) = env.run(&env.system_path(), None, Some("work"), false);
+    assert!(ok, "sync must succeed; stderr={stderr}");
+
+    // The recorded argv (curl + credential command) must NOT contain the key.
+    let rec = env.record_contents();
+    assert!(rec.contains("ARGV:"), "curl must have been invoked: {rec}");
+    assert!(
+        !rec.contains(fake_key),
+        "the key must NOT appear in any recorded argv (curl or credential cmd): {rec}"
+    );
+
+    // The key reached curl only via the stdin config (x-api-key header).
+    let stdin_cfg = fs::read_to_string(&stdin_capture).expect("read curl stdin capture");
+    assert!(
+        stdin_cfg.contains(&format!("x-api-key: {fake_key}")),
+        "the x-api-key config must arrive via curl STDIN: {stdin_cfg}"
+    );
+
+    // The key never leaks to stdout/stderr.
+    assert!(!stdout.contains(fake_key), "no key in summary");
+    assert!(!stderr.contains(fake_key), "no key in stderr");
 }
