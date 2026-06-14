@@ -936,8 +936,148 @@ impl VariableBuilder {
         self
     }
 
+    /// Set opt-in org usage/cost variables from a cached per-account slice:
+    /// `{api_cost_today}`, `{api_cost_mtd}` (clean `$X.XX`), `{api_tokens_by_model}`
+    /// (space-joined `model:total` ordered by total tokens descending, mirroring
+    /// `{rate_limits}`), `{api_account}`, and `{api_tz}` (the cache's tz label,
+    /// e.g. `UTC`).
+    ///
+    /// Mirrors `session_meta`'s present-only insertion: when `slice` is `None`,
+    /// NONE of the `api_*` keys are inserted, so the default render is
+    /// byte-identical to v3.1.0. Referencing these variables in a template is the
+    /// opt-in; the slice is only present when `[ant]` is enabled and the active
+    /// account's usage cache loaded (D-16 total read).
+    pub fn api_usage(
+        mut self,
+        slice: Option<&crate::ant::cache::UsageCache>,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        if let Some(u) = slice {
+            // Clean `$X.XX` cost figures — no baked-in "org" marker (D-07).
+            self.variables.insert(
+                "api_cost_today".to_string(),
+                format!("{}${:.2}{}", color, u.today_usd, reset),
+            );
+            self.variables.insert(
+                "api_cost_mtd".to_string(),
+                format!("{}${:.2}{}", color, u.mtd_usd, reset),
+            );
+
+            // Per-model totals, ordered by total tokens descending (RESEARCH OQ1),
+            // humanized via the shared `format_token_count` helper, space-joined
+            // like `{rate_limits}`.
+            let mut pairs: Vec<(&String, u64)> = u
+                .tokens_by_model
+                .iter()
+                .map(|(model, tb)| (model, tb.total()))
+                .collect();
+            // Sort by total desc, then model name asc for a stable, deterministic
+            // ordering on ties.
+            pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+            if !pairs.is_empty() {
+                let combined = pairs
+                    .iter()
+                    .map(|(model, total)| format!("{}:{}", model, format_token_count(*total)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.variables.insert(
+                    "api_tokens_by_model".to_string(),
+                    format!("{}{}{}", color, combined, reset),
+                );
+            }
+
+            self.variables.insert(
+                "api_account".to_string(),
+                format!("{}{}{}", color, u.account, reset),
+            );
+            self.variables
+                .insert("api_tz".to_string(), format!("{}{}{}", color, u.tz, reset));
+        }
+        self
+    }
+
     /// Build the final HashMap
     pub fn build(self) -> HashMap<String, String> {
         self.variables
+    }
+}
+
+#[cfg(test)]
+mod api_usage_tests {
+    use super::*;
+    use crate::ant::cache::{TokenBreakdown, UsageCache, USAGE_CACHE_SCHEMA_VERSION};
+    use std::collections::HashMap;
+
+    /// Strip the no-op color/reset wrappers (empty under NO_COLOR/tests) — the
+    /// builder formats `{color}{value}{reset}`; with empty color/reset args the
+    /// stored value is exactly `value`.
+    fn slice_with(today: f64, mtd: f64) -> UsageCache {
+        let mut tokens = HashMap::new();
+        // opus total = 1_200_000 -> "1.2M"; sonnet total = 800_000 -> "800.0K".
+        tokens.insert(
+            "opus".to_string(),
+            TokenBreakdown {
+                uncached_input: 1_200_000,
+                ..Default::default()
+            },
+        );
+        tokens.insert(
+            "sonnet".to_string(),
+            TokenBreakdown {
+                output: 800_000,
+                ..Default::default()
+            },
+        );
+        UsageCache {
+            schema_version: USAGE_CACHE_SCHEMA_VERSION,
+            fetched_at: chrono::Utc::now(),
+            account: "work".to_string(),
+            today_usd: today,
+            mtd_usd: mtd,
+            tz: "UTC".to_string(),
+            tokens_by_model: tokens,
+        }
+    }
+
+    #[test]
+    fn some_slice_inserts_all_five_vars_formatted() {
+        let slice = slice_with(12.5, 340.0);
+        let vars = VariableBuilder::new()
+            .api_usage(Some(&slice), "", "")
+            .build();
+
+        assert_eq!(
+            vars.get("api_cost_today").map(String::as_str),
+            Some("$12.50")
+        );
+        assert_eq!(
+            vars.get("api_cost_mtd").map(String::as_str),
+            Some("$340.00")
+        );
+        // Ordered by total tokens desc: opus (1.2M) before sonnet (800.0K).
+        assert_eq!(
+            vars.get("api_tokens_by_model").map(String::as_str),
+            Some("opus:1.2M sonnet:800.0K")
+        );
+        assert_eq!(vars.get("api_account").map(String::as_str), Some("work"));
+        assert_eq!(vars.get("api_tz").map(String::as_str), Some("UTC"));
+    }
+
+    #[test]
+    fn none_slice_inserts_no_api_vars() {
+        let vars = VariableBuilder::new().api_usage(None, "", "").build();
+        for key in [
+            "api_cost_today",
+            "api_cost_mtd",
+            "api_tokens_by_model",
+            "api_account",
+            "api_tz",
+        ] {
+            assert!(
+                !vars.contains_key(key),
+                "absent slice must NOT insert `{key}` (byte-identical guarantee)"
+            );
+        }
     }
 }
