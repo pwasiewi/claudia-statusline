@@ -447,6 +447,7 @@ mod tests {
         AntConfig {
             enabled: true,
             profile: p.to_string(),
+            ..Default::default()
         }
     }
 
@@ -454,6 +455,7 @@ mod tests {
         AntConfig {
             enabled: true,
             profile: String::new(),
+            ..Default::default()
         }
     }
 
