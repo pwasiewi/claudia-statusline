@@ -96,7 +96,9 @@ fi
 # Test 6: Test with cost data
 log_test "Testing with cost data..."
 TEST_OUTPUT=$(echo '{"workspace":{"current_dir":"/tmp"},"cost":{"total_cost_usd":5.50}}' | statusline 2>&1)
-if [ $? -eq 0 ] && echo "$TEST_OUTPUT" | grep -q "$"; then
+# Match a rendered dollar amount ($N.NN). The previous `grep -q "$"` was vacuous:
+# `$` is the end-of-line anchor and matches every line, so the test always passed.
+if [ $? -eq 0 ] && echo "$TEST_OUTPUT" | grep -qE '\$[0-9]+\.[0-9]{2}'; then
     log_pass "Cost data processed"
 else
     log_fail "Cost data not processed"
