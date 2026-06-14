@@ -182,7 +182,10 @@ fn fake_exec_no_enrichment_subprocess_spawned() {
         })
         .expect("Failed to execute binary");
 
-    assert!(output.status.success(), "render must still exit 0 under fake PATH");
+    assert!(
+        output.status.success(),
+        "render must still exit 0 under fake PATH"
+    );
 
     let ant_marker = marker_dir.path().join("ant.invoked");
     let curl_marker = marker_dir.path().join("curl.invoked");

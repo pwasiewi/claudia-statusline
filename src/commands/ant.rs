@@ -106,10 +106,7 @@ mod tests {
     }
 
     fn overrides(pairs: &[(&str, usize)]) -> HashMap<String, usize> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), *v))
-            .collect()
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
     // (i) A differing override IS a divergence.
