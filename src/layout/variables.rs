@@ -997,6 +997,43 @@ impl VariableBuilder {
         self
     }
 
+    /// Set the opt-in per-cache staleness variables `{api_usage_age}` and
+    /// `{api_models_age}` from PRE-COMPUTED humanized age strings (e.g. `10m`,
+    /// `2h`, `3d`).
+    ///
+    /// Mirrors `api_usage`/`rate_limits`'s present-only insertion: a key is
+    /// inserted ONLY when its age is `Some`, so a never-synced cache renders NO
+    /// var at all (D-12 — it can never be misread as `$0`) and the default render
+    /// stays byte-identical (D-08). Both vars use the dim `color` (light_gray,
+    /// same family as `{api_*}`): per D-11 the dim wrapper IS the staleness
+    /// treatment, so both the fresh and stale branches use `color` today. The
+    /// `usage_stale`/`models_stale` flags are threaded so a future, louder stale
+    /// treatment can branch here without changing this method's signature.
+    #[allow(clippy::too_many_arguments)]
+    pub fn api_age(
+        mut self,
+        usage_age: Option<&str>,
+        usage_stale: bool,
+        models_age: Option<&str>,
+        models_stale: bool,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        if let Some(a) = usage_age {
+            // Dim is the stale treatment (D-11); both branches use `color`. Bind
+            // the flag so the signature stays stable for a future louder treatment.
+            let _ = usage_stale;
+            self.variables
+                .insert("api_usage_age".to_string(), format!("{color}{a}{reset}"));
+        }
+        if let Some(a) = models_age {
+            let _ = models_stale;
+            self.variables
+                .insert("api_models_age".to_string(), format!("{color}{a}{reset}"));
+        }
+        self
+    }
+
     /// Build the final HashMap
     pub fn build(self) -> HashMap<String, String> {
         self.variables
@@ -1079,5 +1116,51 @@ mod api_usage_tests {
                 "absent slice must NOT insert `{key}` (byte-identical guarantee)"
             );
         }
+    }
+
+    #[test]
+    fn api_age_inserts_both_present_keys_formatted() {
+        // Empty color/reset => stored value is exactly the humanized age string.
+        let vars = VariableBuilder::new()
+            .api_age(Some("10m"), false, Some("2h"), true, "", "")
+            .build();
+        assert_eq!(vars.get("api_usage_age").map(String::as_str), Some("10m"));
+        assert_eq!(vars.get("api_models_age").map(String::as_str), Some("2h"));
+    }
+
+    #[test]
+    fn api_age_usage_absent_inserts_only_models() {
+        let vars = VariableBuilder::new()
+            .api_age(None, false, Some("2h"), false, "", "")
+            .build();
+        assert!(
+            !vars.contains_key("api_usage_age"),
+            "a never-synced usage cache must NOT insert api_usage_age (D-12)"
+        );
+        assert_eq!(vars.get("api_models_age").map(String::as_str), Some("2h"));
+    }
+
+    #[test]
+    fn api_age_both_absent_inserts_neither() {
+        let vars = VariableBuilder::new()
+            .api_age(None, false, None, false, "", "")
+            .build();
+        for key in ["api_usage_age", "api_models_age"] {
+            assert!(
+                !vars.contains_key(key),
+                "both-absent must NOT insert `{key}` (byte-identical default)"
+            );
+        }
+    }
+
+    #[test]
+    fn api_age_wraps_in_color_and_reset() {
+        let vars = VariableBuilder::new()
+            .api_age(Some("3d"), false, None, false, "<c>", "<r>")
+            .build();
+        assert_eq!(
+            vars.get("api_usage_age").map(String::as_str),
+            Some("<c>3d<r>")
+        );
     }
 }
