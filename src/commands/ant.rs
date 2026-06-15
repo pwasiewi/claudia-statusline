@@ -24,7 +24,30 @@ pub(crate) fn handle_ant_command(action: crate::AntAction) -> Result<()> {
             account,
             max_age,
         } => sync_usage(quiet, account, max_age),
+        crate::AntAction::Doctor { json, probe } => doctor(json, probe),
     }
+}
+
+/// `ant doctor`: a passive, secret-safe diagnostic of the ant enrichment state.
+///
+/// Reports (D-13/D-14/D-15/D-16): whether the `ant` CLI is on `PATH`; the `[ant]`
+/// config (enabled / profile / configured accounts); per-cache presence, freshness
+/// (humanized age), staleness, and on-disk paths; the credential SOURCE LABELS for
+/// the models and usage paths (NEVER the key, and — critically — NEVER executing the
+/// credential command in passive mode); which enrichment is currently active given
+/// `[ant].enabled` + `STATUSLINE_ANT_ACCOUNT`; and a security self-audit reusing the
+/// shared `scan_artifacts_for_keys` leak scanner. `--json` mirrors `health --json`'s
+/// schema; the human default mirrors its section layout. `--probe` (opt-in) is the
+/// ONLY new credential/network site (Task 2 fills it).
+///
+/// This handler is deliberately THIN: all scan logic lives in `crate::ant::audit`,
+/// all parse/humanize logic in `crate::ant::duration`, and all label logic in
+/// `crate::ant::fetch::CredentialMode` — mirroring the module-doc split above.
+fn doctor(json_output: bool, probe: bool) -> Result<()> {
+    // Stub: filled by Task 2. Keep the signature so the crate compiles and the
+    // dispatch arm + clap variant are exercisable now.
+    let _ = (json_output, probe);
+    Ok(())
 }
 
 /// `ant sync-models`: fetch the Models API out-of-band and publish the cache.

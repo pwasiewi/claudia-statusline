@@ -229,6 +229,16 @@ pub(crate) enum AntAction {
         #[arg(long, value_name = "DUR")]
         max_age: Option<String>,
     },
+    /// Diagnose ant enrichment: PATH, config, cache freshness, credential source.
+    Doctor {
+        /// Output as JSON (mirrors `health --json`).
+        #[arg(long)]
+        json: bool,
+        /// Actively run the active account's credential command + an API
+        /// reachability check (the only credential/network site; opt-in).
+        #[arg(long)]
+        probe: bool,
+    },
 }
 
 #[derive(Subcommand)]
