@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-06-15
+
+> **Minor release**: optional, default-OFF `[ant]` enrichment that lets the statusline surface authoritative Claude API data (model context windows; per-account org-wide usage/cost) it can't get from the stdin payload. The render path stays **offline, auth-free, sub-few-ms, and byte-identical to v3.1.0** when `[ant]` is disabled — all network/auth/subprocess work is out-of-band in a new `statusline ant` subcommand. Strictly opt-in, lean-dependency (shells out to `ant`/`curl`, no new mandatory deps), and degrades silently everywhere. Fully backward-compatible; no breaking changes.
+
 ### Added
 
+- **Opt-in `[ant]` Claude API enrichment (default off).** New `[ant]` config section, disabled by default. With it absent or `enabled = false`, render output is byte-identical to v3.1.0 and the render path performs no network I/O, never spawns `ant`/`curl`, and never blocks or fails — it reads only local cache files. All fetching is out-of-band via a new `statusline ant …` subcommand writing versioned (`schema_version` + `fetched_at`), atomically-written JSON caches under `~/.cache/claudia-statusline/ant/` (honors `XDG_CACHE_HOME`). No new mandatory dependencies — fetching shells out to `ant` with a `curl` fallback. (ANT-01..06)
+- **Model-metadata cache → accurate context windows (standard key).** `statusline ant sync-models` fetches the Models API out-of-band and caches each model's context window (`max_input_tokens`). `get_context_window_for_model` now consults that cache **after** the payload's authoritative `context_window_size` and **before** the hardcoded defaults; a `0`/unknown cached value falls through to defaults (never renders `0`). No new visible segment — just a more accurate context bar. (ANT-10..12)
+- **Usage & cost cache (Admin key, org-only, per-account).** `statusline ant sync-usage` fetches the Usage & Cost Admin API and atomically caches today + month-to-date spend and by-model token usage **per account** (`[ant.accounts.<name>]`, each with its own argv credential command and per-account cache file `usage/<account>.json`; written only after both endpoints succeed). New opt-in template variables `{api_cost_today}`, `{api_cost_mtd}`, `{api_tokens_by_model}`, `{api_account}`, `{api_tz}` render in **both** render paths only when `[ant]` is enabled and the active account's slice is present (active account selected by `STATUSLINE_ANT_ACCOUNT`), following the existing `rate_limits` present-only pattern. Values are labeled org-wide (not session-scoped), parsed from cents-decimal amounts, and computed in **UTC with an explicit timezone label** (the Cost endpoint is UTC/daily-only and lags ~24h, so "today" trails reality); Priority Tier is excluded by the endpoint. Invisible by default and for accounts without Admin access. (ANT-20..24)
+- **Refresh ergonomics & staleness UX.** `--max-age` self-throttle on `sync-models`/`sync-usage` (respects the ≤1/min poll limit); present-only `{api_*_age}` template variables surface cache staleness past a configurable threshold (`usage_stale_after` 30m / `models_stale_after` 48h defaults); a never-synced cache is distinguished from genuinely zero spend. SessionStart-hook, launchd, and cron refresh recipes documented in README.md and INSTALLATION.md. (ANT-30, ANT-31)
+- **`statusline ant doctor` diagnostic.** Reports `ant` PATH presence, the resolved `[ant]` config, per-cache freshness/staleness/paths, **key-free** credential source labels, and which enrichment is currently active — with a `--json` mode for scripting. Passive by default (never spawns the credential command); `--probe` is the only opt-in credential/network reachability check. (ANT-32)
 - **Rate-limit reset countdown.** The rate-limit segment can now show time until each window resets, e.g. `5h:24% (2h13m) 7d:41% (3d5h)` — opt in with `[display] rate_limit_reset_countdown = true`. New template variables `{rate_limit_5h_reset}` / `{rate_limit_7d_reset}` (e.g. `2h13m`) are always available regardless of the flag. Computed from the payload's `rate_limits.*.resets_at`; a stale/past reset shows no countdown.
 
 ### Fixed
@@ -18,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Hooks: use the native `PostCompact` event.** Documentation now wires `statusline hook postcompact` to Claude Code's dedicated `PostCompact` hook (which supplies a real `session_id` on stdin), instead of the `SessionStart[compact]` workaround (kept as a fallback note for older Claude Code). Added a `refreshInterval` recommendation so time-based segments (the reset countdown) and git/rate-limit state stay fresh while the session is idle. No code change — the hook command already reads `session_id` from stdin.
+
+### Security
+
+- **Least-privilege, never-cache key handling for `ant` enrichment.** API credentials are read from env / `ant auth` profile and are **never logged or written to any cache**; a shadowing `ANTHROPIC_API_KEY` is unset for the child process when an `ant` profile is configured (with the resolved credential source reported). Least privilege is enforced and documented: the standard key is used only for models, the Admin key only for usage. The cache directory is covered by `.claudeignore`, and a CI leak-scan plus a shared `scan_artifacts_for_keys` audit (broad `sk-ant-*` matcher across both caches and the cache-root debug log) confirm no key material ever lands on disk. A new SECURITY.md section documents the model. (ANT-04, ANT-33)
 
 ## [3.1.0] - 2026-06-14
 
