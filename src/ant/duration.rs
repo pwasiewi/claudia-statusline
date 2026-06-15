@@ -37,17 +37,23 @@ pub fn parse_max_age(s: &str) -> crate::error::Result<std::time::Duration> {
     let n: u64 = num
         .parse()
         .map_err(|_| StatuslineError::Config(format!("invalid --max-age number in '{s}'")))?;
-    let secs = match unit {
-        "s" => n,
-        "m" => n * 60,
-        "h" => n * 3600,
-        "d" => n * 86_400,
+    let mult: u64 = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
         other => {
             return Err(StatuslineError::Config(format!(
                 "invalid --max-age unit '{other}' (use s/m/h/d)"
             )))
         }
     };
+    // Checked multiply: an input that fits in `u64` but overflows after the unit
+    // conversion (e.g. `1000000000000000000d`) must NOT panic (debug) or silently
+    // wrap (release, overflow-checks off) — honor the "never panics" doc contract.
+    let secs = n.checked_mul(mult).ok_or_else(|| {
+        StatuslineError::Config(format!("--max-age '{s}' is too large"))
+    })?;
     Ok(std::time::Duration::from_secs(secs))
 }
 
@@ -106,6 +112,20 @@ mod tests {
     fn parse_rejects_bare_unit() {
         // "m" has no numeric prefix -> the prefix parses as empty -> Err.
         assert!(parse_max_age("m").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_overflowing_multiply() {
+        // 1e18 fits in u64 but 1e18 * 86_400 does not. The unit conversion must
+        // return Err (Config) rather than panic (debug) or silently wrap
+        // (release, overflow-checks off) — the WR-01 "never panics" contract.
+        assert!(parse_max_age("1000000000000000000d").is_err());
+        // u64::MAX seconds is fine (no multiply), but u64::MAX minutes overflows.
+        assert!(parse_max_age(&format!("{}m", u64::MAX)).is_err());
+        assert_eq!(
+            parse_max_age(&format!("{}s", u64::MAX)).unwrap(),
+            Duration::from_secs(u64::MAX)
+        );
     }
 
     #[test]
