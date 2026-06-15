@@ -235,6 +235,33 @@ See [Usage Guide](docs/USAGE.md#database-maintenance) for details.
 </details>
 
 <details>
+<summary><b>ant Enrichment Refresh (Optional)</b></summary>
+
+The optional `ant` enrichment (model metadata + per-account usage/cost, off by default) reads
+from a local cache you keep fresh out-of-band. **Install is docs-only** — there is no shipped
+wrapper script; you add the wiring yourself. The credential-reality split: a **SessionStart
+hook** refreshes **usage** (the per-account Admin key lives in your interactive shell), while
+**cron/launchd** refreshes **models** (the standard key is headless-safe).
+
+SessionStart hook in `~/.claude/settings.json` (always `--quiet` + redirect + detach so
+nothing leaks into Claude's context and session start stays instant):
+
+```jsonc
+"command": "statusline ant sync-usage --quiet --max-age 10m >/dev/null 2>&1 & statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1 &"
+```
+
+Models daily via cron (absolute path — cron has a minimal PATH):
+
+```cron
+0 9 * * * /home/USERNAME/.local/bin/statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1
+```
+
+See [INSTALLATION.md](docs/INSTALLATION.md#ant-enrichment-refresh-optional) for the full
+recipes (SessionStart hook with the native `async` alternative, the macOS launchd plist, and
+the credential-reality split explained).
+</details>
+
+<details>
 <summary><b>Configurable Burn Rate</b></summary>
 
 **New in v2.21.0**: Choose how session duration is calculated for accurate cost-per-hour tracking.

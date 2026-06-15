@@ -311,6 +311,112 @@ Or use jq:
 jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline", "padding": 0}}' ~/.claude/settings.json > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
 ```
 
+## ant Enrichment Refresh (Optional)
+
+The optional `ant` enrichment (model-metadata + per-account usage/cost, off by default)
+reads from a local cache that you keep fresh out-of-band. **Install is docs-only:** the
+installer touches **no** refresh wiring, and there is **no shipped wrapper script** — the
+recipes below are raw commands you add yourself.
+
+### The credential-reality split
+
+Two caches are refreshed by two different mechanisms, because they use two different keys:
+
+- **Usage** (`ant sync-usage`) is refreshed by a **SessionStart hook**, because the
+  per-account **Admin key** lives in your interactive, env-swapped shell — exactly where the
+  hook runs.
+- **Models** (`ant sync-models`) is refreshed by **cron / launchd**, because it uses the
+  **standard key**, which is global and headless-safe. Usage is deliberately **NOT** wired
+  into cron/launchd (the Admin key is not available in a headless environment).
+
+`--max-age` makes each command self-throttling: it skips the network fetch if the cache is
+younger than the given window. A manual `ant sync-models` / `ant sync-usage` **without**
+`--max-age` always fetches.
+
+### SessionStart hook (refreshes usage; runs at every session start)
+
+Add to `~/.claude/settings.json`. **Always** pass `--quiet` AND redirect stdio
+(`>/dev/null 2>&1`) AND detach (`&`): SessionStart **stdout becomes Claude's context**, so an
+un-redirected sync summary would be injected into the conversation. Detaching keeps session
+start instant.
+
+```jsonc
+// ~/.claude/settings.json — SessionStart hook (raw shell, detached + redirected).
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "statusline ant sync-usage --quiet --max-age 10m >/dev/null 2>&1 & statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1 &"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Cleaner alternative — Claude Code supports a native `async: true` field for background hooks
+(no shell detach needed):
+
+```jsonc
+// ~/.claude/settings.json — native async background hooks.
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "async": true, "command": "statusline ant sync-usage --quiet --max-age 10m" },
+        { "type": "command", "async": true, "command": "statusline ant sync-models --quiet --max-age 24h" }
+      ]}
+    ]
+  }
+}
+```
+
+Usage is refreshed on a tight 10m window (cost figures move during a session); models on 24h
+(metadata changes rarely).
+
+### launchd plist (macOS — refreshes models daily)
+
+Use the **absolute** binary path: launchd jobs get a minimal `PATH` and will not find
+`statusline` otherwise. Save as `~/Library/LaunchAgents/com.claudia.statusline.sync-models.plist`
+and load with `launchctl load ~/Library/LaunchAgents/com.claudia.statusline.sync-models.plist`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.claudia.statusline.sync-models</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- ABSOLUTE path: launchd has a minimal PATH. -->
+    <string>/Users/USERNAME/.local/bin/statusline</string>
+    <string>ant</string><string>sync-models</string>
+    <string>--quiet</string><string>--max-age</string><string>24h</string>
+  </array>
+  <!-- Daily at 09:00 local. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <!-- If the standard key is env-based, supply it here (the models key is headless-safe): -->
+  <!-- <key>EnvironmentVariables</key><dict><key>ANTHROPIC_API_KEY</key><string>...</string></dict> -->
+  <key>StandardOutPath</key><string>/tmp/statusline-sync-models.log</string>
+  <key>StandardErrorPath</key><string>/tmp/statusline-sync-models.err</string>
+</dict>
+</plist>
+```
+
+### cron line (Linux — refreshes models daily)
+
+Absolute path again (cron has a minimal `PATH`):
+
+```cron
+# crontab -e — daily models refresh at 09:00.
+0 9 * * * /home/USERNAME/.local/bin/statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1
+```
+
 ## Verification
 
 After installation, verify everything works:
