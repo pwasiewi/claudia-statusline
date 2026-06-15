@@ -13,6 +13,11 @@
 //! scanner never panics, spawns a process, opens a socket, or creates a
 //! directory.
 
+// Forward-public foundation API consumed by the CI leak test (ANT-33) and the
+// `ant doctor` self-audit (Plan 09-03). The binary crate does not reference it
+// yet — mirror the existing `#![allow(dead_code)]` on fetch.rs/cache.rs/usage.rs.
+#![allow(dead_code)]
+
 /// Regex matching BOTH key families: `sk-ant-api03-…` AND `sk-ant-admin01-…`.
 ///
 /// Deliberately broad (`sk-ant-` + the base64url-ish key alphabet) so a planted

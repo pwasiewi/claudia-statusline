@@ -47,6 +47,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.8"
 serial_test = "3.1"
 proptest = "1.4"
+regex = "1.10"  # already a runtime dep; used by integration tests for KEY_PATTERN assertions
 
 # Turso sync examples require the turso-sync feature
 [[example]]

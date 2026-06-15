@@ -75,6 +75,25 @@ pub struct AntConfig {
     /// behavior — `enabled`/`profile` stay account-agnostic per D-08/A4).
     #[serde(default)]
     pub accounts: HashMap<String, AntAccount>,
+    /// Mark the usage-age template var stale once the usage cache exceeds this
+    /// (default `"30m"`, D-10). Same single-unit grammar as `--max-age`
+    /// (parsed with [`crate::ant::duration::parse_max_age`] on use).
+    #[serde(default = "default_usage_stale_after")]
+    pub usage_stale_after: String,
+    /// Mark the models-age template var stale once the models cache exceeds this
+    /// (default `"48h"`, D-10). Same single-unit grammar as `--max-age`.
+    #[serde(default = "default_models_stale_after")]
+    pub models_stale_after: String,
+}
+
+/// Default usage-cache staleness threshold (D-10).
+fn default_usage_stale_after() -> String {
+    "30m".into()
+}
+
+/// Default models-cache staleness threshold (D-10).
+fn default_models_stale_after() -> String {
+    "48h".into()
 }
 
 // The manual impl is intentional (and mirrors `GsdConfig`): it makes the
@@ -87,6 +106,8 @@ impl Default for AntConfig {
             enabled: false,
             profile: String::new(),
             accounts: HashMap::new(),
+            usage_stale_after: default_usage_stale_after(),
+            models_stale_after: default_models_stale_after(),
         }
     }
 }
@@ -163,5 +184,24 @@ mod tests {
     #[test]
     fn account_default_admin_key_command_is_empty() {
         assert!(AntAccount::default().admin_key_command.is_empty());
+    }
+
+    #[test]
+    fn default_staleness_thresholds() {
+        // D-10: usage 30m / models 48h are the per-cache staleness defaults.
+        let cfg = AntConfig::default();
+        assert_eq!(cfg.usage_stale_after, "30m");
+        assert_eq!(cfg.models_stale_after, "48h");
+    }
+
+    #[test]
+    fn toml_without_thresholds_yields_default_thresholds() {
+        // An [ant] config that omits the threshold keys must still parse to the
+        // 30m/48h defaults (rides on #[serde(default = ...)]), so existing
+        // configs keep working unchanged.
+        let cfg: AntConfig =
+            toml::from_str("enabled = true\n").expect("valid TOML without thresholds");
+        assert_eq!(cfg.usage_stale_after, "30m");
+        assert_eq!(cfg.models_stale_after, "48h");
     }
 }

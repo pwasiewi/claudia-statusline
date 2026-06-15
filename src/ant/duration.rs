@@ -12,6 +12,11 @@
 //! (`<1m` / `10m` / `2h` / `3d`), clamping negative durations (clock skew) to
 //! `<1m` so a slightly-ahead `fetched_at` never produces a nonsense age.
 
+// Forward-public foundation API consumed by Plans 09-02/03/04. The binary crate
+// (src/main.rs's own `mod ant`) does not reference these yet — mirror the
+// existing `#![allow(dead_code)]` on fetch.rs/cache.rs/usage.rs.
+#![allow(dead_code)]
+
 /// Parse a single-unit duration string (`10m`, `90s`, `24h`, `2d`) into a
 /// [`std::time::Duration`].
 ///
