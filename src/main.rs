@@ -211,6 +211,10 @@ pub(crate) enum AntAction {
         /// Run in quiet mode (suppress the summary; errors still print)
         #[arg(short, long)]
         quiet: bool,
+        /// Skip the fetch if the cache is younger than this (e.g. 10m, 24h, 2d).
+        /// Omit to always fetch (manual runs are never throttled — ANT-30/D-02).
+        #[arg(long, value_name = "DUR")]
+        max_age: Option<String>,
     },
     /// Fetch org usage & cost (Admin API) and cache the active account's slice
     SyncUsage {
@@ -220,6 +224,10 @@ pub(crate) enum AntAction {
         /// Override the active account (default: STATUSLINE_ANT_ACCOUNT)
         #[arg(long)]
         account: Option<String>,
+        /// Skip the fetch if the active account's cache is younger than this
+        /// (e.g. 10m, 24h, 2d). Omit to always fetch (ANT-30/D-02).
+        #[arg(long, value_name = "DUR")]
+        max_age: Option<String>,
     },
 }
 
