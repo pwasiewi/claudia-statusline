@@ -14,8 +14,11 @@
 //!   declared here so Plan 03 only adds the file, never edits this module).
 //! - [`usage`] — the out-of-band org-admin usage/cost fetch (implemented in
 //!   08-02; declared here as a placeholder so the module graph is stable).
+//! - [`duration`] — pure `--max-age` / staleness duration parse + humanize
+//!   helpers (no new crate; Phase 09 foundation).
 
 pub mod cache;
 pub mod config;
+pub mod duration;
 pub mod fetch;
 pub mod usage;
