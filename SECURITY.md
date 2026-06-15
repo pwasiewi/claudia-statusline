@@ -102,3 +102,63 @@ Security updates will be released as patch versions (e.g., 2.2.1, 2.2.2) and cle
 ## Credits
 
 Security issues were identified and fixed by the Claudia Statusline maintainers with assistance from Claude Code Assistant.
+
+## ant Enrichment Key Handling
+
+The optional `ant` enrichment (model metadata + per-account usage/cost, off by default)
+talks to the Anthropic API and therefore handles API keys. Its security model is built on
+**least privilege**, a **never-log / never-cache** invariant, and a CI regression guard —
+not on the repository `.claudeignore`, whose scope is deliberately limited (see the caveat
+below).
+
+### Least-privilege key mapping
+
+Two distinct credentials map to two distinct command surfaces, and the separation is
+enforced **structurally** by which command resolves which credential:
+
+| Command            | Credential          | API surface used        |
+| ------------------ | ------------------- | ----------------------- |
+| `ant sync-models`  | standard API key    | Models API only         |
+| `ant sync-usage`   | per-account Admin key (`admin_key_command`) | Usage & Cost (Admin) API only |
+
+The standard key is used **only** for the Models API; the Admin key is used **only** for the
+Usage & Cost API. `sync-models` never resolves an Admin key, and `sync-usage` never uses the
+standard key. There is no code path that grants the standard key Admin scope or vice versa, so
+a misconfiguration cannot escalate a key beyond the single API it was provisioned for.
+
+### Key-handling invariants
+
+- **Never logged.** Keys are not written to stdout, stderr, the debug log, or any diagnostic
+  output. `ant doctor` reports credential **source labels** only and never resolves a key in
+  passive mode.
+- **Never cached.** The cache structs (`ModelsCache`, `UsageCache` in `src/ant/cache.rs`)
+  carry **no key/secret field** — only model metadata and numeric spend/token totals. A key
+  cannot be serialized to disk because there is nowhere on the schema to put it.
+- **Materialized only for the single API call.** A key is resolved via the credential-command
+  seam (the `admin_key_command` argv for usage; the standard-key env/auth chain for models)
+  and handed to `curl` via a leak-free STDIN config (never on argv, never on disk), existing
+  in memory only for the duration of that one request.
+- **Process env is in-scope by design, not a leak vector.** A key passed via
+  `ANTHROPIC_API_KEY` legitimately lives in the process environment transiently while a sync
+  runs. This is expected and is therefore **NOT** part of the audited artifact set — the leak
+  scanner (`scan_artifacts_for_keys`) explicitly never reads `std::env` (D-18); scanning it
+  would only produce false positives.
+
+### `.claudeignore` home-cache scope caveat
+
+The repository-root `.claudeignore` (header scope note at `.claudeignore:9-19`) excludes any
+**in-tree** `ant` cache (e.g. when a test points `XDG_CACHE_HOME` at a directory under the
+repo) from agent reads. It **cannot** protect the real user-home cache at
+`~/.cache/claudia-statusline/ant/` (or the macOS `~/Library/Caches` equivalent), which lives
+outside the repository and is therefore outside this file's reach. Do not read `.claudeignore`
+as a guarantee about files under the user's home directory.
+
+The real defense-in-depth is **structural**, not the ignore file:
+
+1. The cache struct stores no key field (so a key can never be written to any cache).
+2. The key is never logged and is materialized only for the single API call.
+3. The CI leak-scan test (`tests/ant_audit_tests.rs::written_cache_artifacts_contain_no_key`)
+   runs the real cache writers under an isolated cache root and asserts, via the shared
+   `scan_artifacts_for_keys` scanner, that **no** written artifact (model cache, per-account
+   usage cache, or debug log) contains an `sk-ant-` string — a permanent regression guard
+   that the same scanner also powers as the `ant doctor` security self-audit.
