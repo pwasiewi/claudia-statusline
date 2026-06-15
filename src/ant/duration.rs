@@ -51,9 +51,9 @@ pub fn parse_max_age(s: &str) -> crate::error::Result<std::time::Duration> {
     // Checked multiply: an input that fits in `u64` but overflows after the unit
     // conversion (e.g. `1000000000000000000d`) must NOT panic (debug) or silently
     // wrap (release, overflow-checks off) — honor the "never panics" doc contract.
-    let secs = n.checked_mul(mult).ok_or_else(|| {
-        StatuslineError::Config(format!("--max-age '{s}' is too large"))
-    })?;
+    let secs = n
+        .checked_mul(mult)
+        .ok_or_else(|| StatuslineError::Config(format!("--max-age '{s}' is too large")))?;
     Ok(std::time::Duration::from_secs(secs))
 }
 

@@ -141,7 +141,10 @@ mod tests {
 
         let content = read_capped(&p).expect("readable temp file");
         let re = regex::Regex::new(KEY_PATTERN).expect("valid regex");
-        assert!(re.is_match(&content), "planted key in a normal file is found");
+        assert!(
+            re.is_match(&content),
+            "planted key in a normal file is found"
+        );
 
         let _ = std::fs::remove_file(&p);
     }

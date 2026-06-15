@@ -37,7 +37,7 @@ fn test_hook_precompact_creates_state_file() {
     let binary = test_support::test_binary();
 
     // Run precompact hook
-    let output = Command::new(&binary)
+    let output = Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -71,7 +71,7 @@ fn test_hook_stop_clears_state_file() {
     let binary = test_support::test_binary();
 
     // Create state first
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -89,7 +89,7 @@ fn test_hook_stop_clears_state_file() {
     );
 
     // Run stop hook
-    let output = Command::new(&binary)
+    let output = Command::new(binary)
         .args(["hook", "stop", &format!("--session-id={}", session_id)])
         .output()
         .expect("Failed to execute stop hook");
@@ -109,7 +109,7 @@ fn test_statusline_detects_hook_compaction() {
     let input = create_test_input(&session_id, &transcript);
 
     // Set hook state
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -120,7 +120,7 @@ fn test_statusline_detects_hook_compaction() {
         .expect("Failed to execute precompact");
 
     // Run statusline
-    let mut child = Command::new(&binary)
+    let mut child = Command::new(binary)
         .env_remove("NO_COLOR") // Ensure colors are enabled for testing
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -167,7 +167,7 @@ fn test_statusline_without_hook_shows_percentage() {
     let _ = fs::remove_file(&state_file);
 
     // Run statusline
-    let output = Command::new(&binary)
+    let output = Command::new(binary)
         .env_remove("NO_COLOR")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -206,7 +206,7 @@ fn test_hook_state_transition() {
 
     // Helper to get statusline output
     let get_output = || -> String {
-        let output = Command::new(&binary)
+        let output = Command::new(binary)
             .env_remove("NO_COLOR")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -229,7 +229,7 @@ fn test_hook_state_transition() {
     );
 
     // State 2: Trigger precompact
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -246,7 +246,7 @@ fn test_hook_state_transition() {
     );
 
     // State 3: Trigger stop
-    Command::new(&binary)
+    Command::new(binary)
         .args(["hook", "stop", &format!("--session-id={}", session_id)])
         .output()
         .expect("Failed to trigger stop");
@@ -269,7 +269,7 @@ fn test_multiple_sessions_isolated() {
     let binary = test_support::test_binary();
 
     // Set hook for session A only
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -300,7 +300,7 @@ fn test_hook_trigger_types() {
     let state_file = cache_dir.join(format!("state-{}.json", session_id));
 
     // Test auto trigger
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -314,7 +314,7 @@ fn test_hook_trigger_types() {
     assert!(content.contains("\"trigger\": \"auto\""));
 
     // Test manual trigger
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -338,7 +338,7 @@ fn test_hook_idempotency() {
 
     // Call precompact multiple times
     for _ in 0..3 {
-        let output = Command::new(&binary)
+        let output = Command::new(binary)
             .args([
                 "hook",
                 "precompact",
@@ -353,7 +353,7 @@ fn test_hook_idempotency() {
 
     // Call stop multiple times (should not error)
     for _ in 0..3 {
-        let output = Command::new(&binary)
+        let output = Command::new(binary)
             .args(["hook", "stop", &format!("--session-id={}", session_id)])
             .output()
             .expect("Failed to execute stop");
@@ -374,7 +374,7 @@ fn test_hook_postcompact_clears_state_file() {
     let binary = test_support::test_binary();
 
     // Create state first (simulates PreCompact)
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -392,7 +392,7 @@ fn test_hook_postcompact_clears_state_file() {
     );
 
     // Run postcompact hook (simulates SessionStart[compact])
-    let output = Command::new(&binary)
+    let output = Command::new(binary)
         .args([
             "hook",
             "postcompact",
@@ -416,7 +416,7 @@ fn test_hook_postcompact_without_precompact() {
     let binary = test_support::test_binary();
 
     // PostCompact without PreCompact should not error (idempotent)
-    let output = Command::new(&binary)
+    let output = Command::new(binary)
         .args([
             "hook",
             "postcompact",
@@ -444,7 +444,7 @@ fn test_full_compaction_lifecycle_with_postcompact() {
 
     // Helper to get statusline output
     let get_output = || -> String {
-        let output = Command::new(&binary)
+        let output = Command::new(binary)
             .env_remove("NO_COLOR")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -468,7 +468,7 @@ fn test_full_compaction_lifecycle_with_postcompact() {
     );
 
     // Phase 2: PreCompact - compaction starts
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -485,7 +485,7 @@ fn test_full_compaction_lifecycle_with_postcompact() {
     );
 
     // Phase 3: PostCompact - compaction completes (via SessionStart[compact])
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "postcompact",
@@ -514,7 +514,7 @@ fn test_postcompact_idempotency() {
     let binary = test_support::test_binary();
 
     // Create state
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -526,7 +526,7 @@ fn test_postcompact_idempotency() {
 
     // Call postcompact multiple times - should all succeed
     for i in 0..3 {
-        let output = Command::new(&binary)
+        let output = Command::new(binary)
             .args([
                 "hook",
                 "postcompact",
@@ -554,7 +554,7 @@ fn test_postcompact_with_empty_session_id() {
 
     // First, create a state file with a real session_id (PreCompact works normally)
     let real_session_id = format!("test-empty-workaround-{}", std::process::id());
-    Command::new(&binary)
+    Command::new(binary)
         .args([
             "hook",
             "precompact",
@@ -575,7 +575,7 @@ fn test_postcompact_with_empty_session_id() {
     // Run postcompact with empty session_id via stdin JSON (simulates Claude Code bug #9567)
     // This tests the reset_all_sessions_max_tokens() workaround
     let hook_json = r#"{"session_id": "", "hook_event_name": "SessionStart"}"#;
-    let mut child = Command::new(&binary)
+    let mut child = Command::new(binary)
         .args(["hook", "postcompact"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
