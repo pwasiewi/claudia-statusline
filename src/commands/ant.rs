@@ -241,7 +241,7 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
         println!(
             "  {} ({} artifact{} scanned)",
             if audit_clean {
-                "✅ no sk-ant- keys found"
+                "✅ no API-key strings found"
             } else {
                 "❌ key-shaped string found in an on-disk artifact"
             },
