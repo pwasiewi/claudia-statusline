@@ -414,6 +414,88 @@ pub(crate) fn tool_on_path(tool: &str) -> bool {
     })
 }
 
+/// `ant doctor --probe` ONLY: a single cheap `GET /v1/models?limit=1`
+/// reachability check using the standard-key transport (D-13 / Pattern 6).
+///
+/// Returns a KEY-FREE status label string (never the key, never the raw body) —
+/// e.g. `"reachable (HTTP 200)"`, `"HTTP 401 (key invalid or expired)"`,
+/// `"network error"`, or a `"skipped: ..."` reason when no transport/credential
+/// is available. This is gated behind `--probe` in the doctor handler; it is the
+/// ONLY new network/credential site the doctor adds. It mirrors the EnvKey curl
+/// transport (key via stdin config, never argv/disk) and only attempts the curl
+/// path when a raw env key is present; profile / default-auth modes that would
+/// require spawning `ant` are reported as a skip to keep the probe single-shot.
+pub(crate) fn probe_models_reachability(cfg: &AntConfig) -> String {
+    let mode = CredentialMode::resolve(cfg);
+    // The reachability probe uses the curl transport (raw env key via stdin).
+    // Only EnvKey mode exposes a raw key for that single-shot check; the other
+    // modes would need `ant`, which we deliberately do not drive here.
+    let key = match mode {
+        CredentialMode::EnvKey => match std::env::var("ANTHROPIC_API_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => return "skipped: ANTHROPIC_API_KEY not set".to_string(),
+        },
+        CredentialMode::Profile(_) | CredentialMode::DefaultAuth => {
+            return "skipped: probe requires ANTHROPIC_API_KEY (env mode)".to_string();
+        }
+    };
+    if !tool_on_path("curl") {
+        return "skipped: curl not on PATH".to_string();
+    }
+
+    let url = format!("{}?limit=1", MODELS_URL);
+    let mut cmd = Command::new("curl");
+    cmd.arg("--config")
+        .arg("-")
+        .arg("--connect-timeout")
+        .arg(CONNECT_TIMEOUT_SECS.to_string())
+        .arg("--max-time")
+        .arg(MAX_TIME_SECS.to_string())
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--output")
+        .arg("/dev/null")
+        .arg("--write-out")
+        .arg("%{http_code}")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return "skipped: could not spawn curl".to_string(),
+    };
+
+    let config = format!(
+        "header = \"x-api-key: {key}\"\n\
+         header = \"anthropic-version: {ver}\"\n\
+         url = \"{url}\"\n",
+        key = key,
+        ver = ANTHROPIC_VERSION,
+        url = url,
+    );
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(config.as_bytes());
+        // Drop closes stdin; the key leaves memory here.
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(_) => return "network error (curl did not complete)".to_string(),
+    };
+
+    // The status code is the whole (tiny) stdout under --output /dev/null.
+    let code_str = String::from_utf8_lossy(&output.stdout);
+    let http_code: u16 = code_str.trim().parse().unwrap_or(0);
+    match http_code {
+        200 => "reachable (HTTP 200)".to_string(),
+        401 => "HTTP 401 (key invalid or expired)".to_string(),
+        403 => "HTTP 403 (key lacks access)".to_string(),
+        0 => "network error (no HTTP response)".to_string(),
+        other => format!("HTTP {other}"),
+    }
+}
+
 /// Bound and sanitize child stderr before including it in an error message
 /// (review MUST-FIX #8): truncate to `STDERR_BOUND` bytes and drop any line that
 /// looks like it carries a key, so a key-bearing diagnostic can never leak.

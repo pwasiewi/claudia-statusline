@@ -565,6 +565,44 @@ pub(crate) fn fetch_usage(account: &str, admin_key_command: &[String]) -> Result
     })
 }
 
+/// `ant doctor --probe` ONLY: resolve the active account's Admin key (this IS the
+/// `--probe`-gated credential exec) and issue ONE cheap cost-report GET to confirm
+/// Admin reachability, returning a KEY-FREE status label.
+///
+/// On HTTP 200 returns `"reachable (HTTP 200)"`. Any failure is surfaced as an
+/// `Err` carrying `curl_get`'s already-sanitized, differentiated message (401 key
+/// invalid, 403 no admin access, network error) — never the key, never the raw
+/// body. The caller (the doctor handler) only calls this when `--probe` is set;
+/// passive doctor never resolves or runs the credential command (D-13).
+pub(crate) fn probe_admin_reachability(
+    _account: &str,
+    admin_key_command: &[String],
+) -> Result<String> {
+    // The ONLY credential exec on the doctor path — gated behind --probe upstream.
+    let key = resolve_admin_key(admin_key_command)?;
+    let windows = utc_windows(Utc::now());
+
+    // One minimal, single-bucket cost GET (today window) as the reachability probe.
+    let mut url = COST_URL.to_string();
+    let mut sep = '?';
+    for (k, v) in [
+        ("starting_at", windows.today.starting_at.as_str()),
+        ("ending_at", windows.today.ending_at.as_str()),
+        ("bucket_width", "1d"),
+    ] {
+        url.push(sep);
+        url.push_str(k);
+        url.push('=');
+        url.push_str(v);
+        sep = '&';
+    }
+
+    // curl_get returns a differentiated, sanitized Err on 401/403/network; a 200
+    // (or any 2xx) body we discard — we only report reachability, never contents.
+    let (_body, http_code) = curl_get(&key, &url)?;
+    Ok(format!("reachable (HTTP {http_code})"))
+}
+
 /// Bound and sanitize child output before including it in an error message:
 /// drop any line that looks like it carries a key, then char-boundary-safe
 /// truncate to [`STDERR_BOUND`] chars — so a key-bearing diagnostic can never

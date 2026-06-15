@@ -44,10 +44,233 @@ pub(crate) fn handle_ant_command(action: crate::AntAction) -> Result<()> {
 /// all parse/humanize logic in `crate::ant::duration`, and all label logic in
 /// `crate::ant::fetch::CredentialMode` — mirroring the module-doc split above.
 fn doctor(json_output: bool, probe: bool) -> Result<()> {
-    // Stub: filled by Task 2. Keep the signature so the crate compiles and the
-    // dispatch arm + clap variant are exercisable now.
-    let _ = (json_output, probe);
+    use crate::ant::cache::{
+        models_cache_path, read_models_cache, read_usage_cache, usage_cache_path,
+    };
+    use crate::ant::duration::humanize_age;
+    use crate::ant::fetch::CredentialMode;
+    use serde_json::json;
+
+    let config = Config::load()?;
+    let ant = &config.ant;
+
+    // --- PATH + active account (passive: a single PATH walk + one env read) ---
+    let ant_on_path = crate::ant::fetch::tool_on_path("ant");
+    let active_account = std::env::var("STATUSLINE_ANT_ACCOUNT")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    // --- Passive cache reads (total: error => None; never mkdir/spawn/net) -----
+    let models = read_models_cache();
+    let usage = active_account.as_deref().and_then(read_usage_cache);
+
+    // Humanized ages + staleness (parse threshold lazily; any parse error or a
+    // negative/future age collapses to not-stale — never fail the report).
+    let models_age = models.as_ref().map(|m| humanize_age(m.age()));
+    let models_stale = models
+        .as_ref()
+        .map(|m| age_is_stale(m.age(), &ant.models_stale_after))
+        .unwrap_or(false);
+    let usage_age = usage.as_ref().map(|u| humanize_age(u.age()));
+    let usage_stale = usage
+        .as_ref()
+        .map(|u| age_is_stale(u.age(), &ant.usage_stale_after))
+        .unwrap_or(false);
+
+    // Resolve cache paths for the report (path math only; never creates a dir).
+    let models_path = models_cache_path().ok().map(|p| p.display().to_string());
+    let usage_path = active_account
+        .as_deref()
+        .and_then(|a| usage_cache_path(a).ok())
+        .map(|p| p.display().to_string());
+
+    // --- Credential SOURCE labels (KEY-FREE, NEVER executed in passive mode) ---
+    let models_cred = CredentialMode::resolve(ant).label();
+    // The usage credential is the active account's admin_key_command — reported as
+    // a SOURCE LABEL only (the exact literal sync_usage prints). It is NOT run here
+    // (D-13): exec is gated behind `--probe` below.
+    let usage_cred = active_account
+        .as_deref()
+        .map(|acct| match ant.accounts.get(acct) {
+            Some(a) if !a.admin_key_command.is_empty() => {
+                "admin_key_command (credential command)".to_string()
+            }
+            Some(_) => "not configured (account has no admin_key_command)".to_string(),
+            None => format!("not configured (no [ant.accounts.{acct}] table)"),
+        });
+
+    // --- Which enrichment is active given [ant].enabled + the active account ----
+    // A var resolves iff [ant].enabled AND the backing cache is present (D-15).
+    let models_active = ant.enabled && models.is_some();
+    let usage_active = ant.enabled && usage.is_some();
+
+    // --- Security self-audit (D-16): reuse the shared on-disk leak scanner -------
+    let findings = crate::ant::audit::scan_artifacts_for_keys();
+    let scanned = findings.len();
+    let audit_clean = !findings.iter().any(|f| f.matched);
+
+    // --- --probe: the ONLY new credential/network site (opt-in) -----------------
+    // Passive default reports "not run (passive)"; --probe runs the active
+    // account's admin_key_command (usage reachability) and a GET /v1/models?limit=1
+    // (models reachability), both returning KEY-FREE status labels.
+    let (models_probe, usage_probe) = if probe {
+        let m = crate::ant::fetch::probe_models_reachability(ant);
+        let u = match active_account.as_deref() {
+            Some(acct) => match ant.accounts.get(acct) {
+                Some(a) if !a.admin_key_command.is_empty() => {
+                    match crate::ant::usage::probe_admin_reachability(acct, &a.admin_key_command) {
+                        Ok(label) => label,
+                        // Differentiated error label (401/403/network) — already
+                        // key-free per usage::curl_get's sanitization.
+                        Err(e) => format!("error: {e}"),
+                    }
+                }
+                _ => "skipped: no admin_key_command for the active account".to_string(),
+            },
+            None => "skipped: no active account".to_string(),
+        };
+        (Some(m), Some(u))
+    } else {
+        (None, None)
+    };
+
+    // --- Emit: health.rs dual human/JSON split (D-14) ---------------------------
+    if json_output {
+        let report = json!({
+            "ant_on_path": ant_on_path,
+            "enabled": ant.enabled,
+            "profile": ant.profile,
+            "accounts": ant.accounts.keys().cloned().collect::<Vec<_>>(),
+            "active_account": active_account,
+            "caches": {
+                "models": {
+                    "present": models.is_some(),
+                    "age": models_age,
+                    "stale": models_stale,
+                    "path": models_path,
+                },
+                "usage": {
+                    "present": usage.is_some(),
+                    "age": usage_age,
+                    "stale": usage_stale,
+                    "path": usage_path,
+                },
+            },
+            "credentials": {
+                "models": models_cred,
+                "usage": usage_cred,
+            },
+            "active_enrichment": {
+                "models": models_active,
+                "usage": usage_active,
+            },
+            "audit": {
+                "clean": audit_clean,
+                "scanned": scanned,
+            },
+            "probe": {
+                "ran": probe,
+                "models": models_probe,
+                "usage": usage_probe,
+            },
+        });
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        let yn = |b: bool| if b { "yes" } else { "no" };
+        println!("ant Enrichment Doctor");
+        println!("=====================");
+        println!();
+        println!("Configuration:");
+        println!("  ant on PATH: {}", yn(ant_on_path));
+        println!("  Enabled: {}", yn(ant.enabled));
+        println!(
+            "  Profile: {}",
+            if ant.profile.is_empty() {
+                "(default)".to_string()
+            } else {
+                ant.profile.clone()
+            }
+        );
+        let mut accounts: Vec<&String> = ant.accounts.keys().collect();
+        accounts.sort();
+        println!(
+            "  Accounts: {}",
+            if accounts.is_empty() {
+                "(none)".to_string()
+            } else {
+                accounts
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        println!(
+            "  Active account: {}",
+            active_account.as_deref().unwrap_or("(none)")
+        );
+        println!();
+        println!("Caches:");
+        match (&models_age, &models_path) {
+            (Some(age), Some(path)) => println!(
+                "  Models: present, age {age}{}\n    {path}",
+                if models_stale { " (stale)" } else { "" }
+            ),
+            _ => println!("  Models: absent"),
+        }
+        match (&usage_age, &usage_path) {
+            (Some(age), Some(path)) => println!(
+                "  Usage:  present, age {age}{}\n    {path}",
+                if usage_stale { " (stale)" } else { "" }
+            ),
+            _ => println!("  Usage:  absent"),
+        }
+        println!();
+        println!("Credentials (source labels only — never executed in passive mode):");
+        println!("  Models: {models_cred}");
+        println!(
+            "  Usage:  {}",
+            usage_cred.as_deref().unwrap_or("(no active account)")
+        );
+        println!();
+        println!("Active enrichment:");
+        println!("  {{api_*}} models vars: {}", yn(models_active));
+        println!("  {{api_*}} usage vars:  {}", yn(usage_active));
+        println!();
+        println!("Security self-audit (on-disk artifacts):");
+        println!(
+            "  {} ({} artifact{} scanned)",
+            if audit_clean {
+                "✅ no sk-ant- keys found"
+            } else {
+                "❌ key-shaped string found in an on-disk artifact"
+            },
+            scanned,
+            if scanned == 1 { "" } else { "s" }
+        );
+        println!();
+        println!("Probe (--probe to run; opt-in credential/network):");
+        match (&models_probe, &usage_probe) {
+            (Some(m), Some(u)) => {
+                println!("  Models reachability: {m}");
+                println!("  Usage reachability:  {u}");
+            }
+            _ => println!("  not run (passive)"),
+        }
+    }
+
     Ok(())
+}
+
+/// Passive staleness check for the doctor report: parse the user's threshold
+/// lazily and compare. A malformed threshold OR a negative/future age (clock
+/// skew) collapses to NOT-stale (`false`) — the report must never fail on bad
+/// user TOML (mirrors `display::is_stale`, D-16).
+fn age_is_stale(age: chrono::Duration, threshold: &str) -> bool {
+    match crate::ant::duration::parse_max_age(threshold) {
+        Ok(max) => age.to_std().map(|a| a >= max).unwrap_or(false),
+        Err(_) => false,
+    }
 }
 
 /// `ant sync-models`: fetch the Models API out-of-band and publish the cache.
