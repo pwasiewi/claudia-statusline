@@ -266,6 +266,84 @@ fn api_usage_renders_via_library() {
 }
 
 #[test]
+#[serial_test::serial]
+fn api_age_vars_render_via_library() {
+    // Proves the SINGLE display.rs api_age wiring reaches the LIBRARY render path:
+    // with `[ant]` enabled, STATUSLINE_ANT_ACCOUNT set, a usage slice AND a models
+    // cache on disk, a custom layout referencing `{api_usage_age}`/`{api_models_age}`
+    // renders the humanized ages (Pitfall 6 / D-08/D-09).
+    let _lock = ENV_MUTEX.lock().unwrap();
+
+    let home = tempfile::tempdir().unwrap();
+    let orig_home = std::env::var_os("HOME");
+    let orig_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
+
+    // Compute the cache dir the SAME way production does (dirs::cache_dir()).
+    let cache_root = dirs::cache_dir().expect("cache dir resolvable");
+    let ant_dir = cache_root.join("claudia-statusline").join("ant");
+    let usage_dir = ant_dir.join("usage");
+    std::fs::create_dir_all(&usage_dir).unwrap();
+
+    // A usage slice fetched ~10 minutes ago and a models cache ~2 hours ago, so the
+    // humanized ages are deterministic ("10m" / "2h").
+    let usage_when = (chrono::Utc::now() - chrono::Duration::seconds(600))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let models_when = (chrono::Utc::now() - chrono::Duration::seconds(7200))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let slice = format!(
+        "{{\"schema_version\":1,\"fetched_at\":\"{usage_when}\",\"account\":\"work\",\
+         \"today_usd\":1.0,\"mtd_usd\":2.0,\"tz\":\"UTC\",\"tokens_by_model\":{{}}}}"
+    );
+    std::fs::write(usage_dir.join("work.json"), slice).unwrap();
+    let models = format!(
+        "{{\"schema_version\":1,\"fetched_at\":\"{models_when}\",\
+         \"models\":{{\"claude-x\":{{\"max_input_tokens\":200000}}}}}}"
+    );
+    std::fs::write(ant_dir.join("models.json"), models).unwrap();
+
+    let cfg = home.path().join("config.toml");
+    std::fs::write(
+        &cfg,
+        "[ant]\nenabled = true\n\n[layout]\nformat = \"{api_usage_age} {api_models_age}\"\n",
+    )
+    .unwrap();
+
+    let orig_cfg = std::env::var_os("STATUSLINE_CONFIG");
+    let orig_acct = std::env::var_os("STATUSLINE_ANT_ACCOUNT");
+    std::env::set_var("STATUSLINE_CONFIG", &cfg);
+    std::env::set_var("STATUSLINE_ANT_ACCOUNT", "work");
+    std::env::set_var("NO_COLOR", "1");
+    statusline::config::reset_config();
+
+    let json =
+        r#"{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude 3.5 Sonnet"}}"#;
+    let result = render_from_json(json, false);
+
+    let restore = |key: &str, val: Option<std::ffi::OsString>| match val {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    };
+    restore("HOME", orig_home);
+    restore("XDG_CACHE_HOME", orig_xdg_cache);
+    restore("STATUSLINE_CONFIG", orig_cfg);
+    restore("STATUSLINE_ANT_ACCOUNT", orig_acct);
+    std::env::remove_var("NO_COLOR");
+    statusline::config::reset_config();
+
+    let output = result.expect("render must succeed");
+    assert!(
+        output.contains("10m"),
+        "library render must surface {{api_usage_age}} = 10m, got: {output:?}"
+    );
+    assert!(
+        output.contains("2h"),
+        "library render must surface {{api_models_age}} = 2h, got: {output:?}"
+    );
+}
+
+#[test]
 fn test_render_invalid_json() {
     let json = r#"{ invalid json }"#;
 

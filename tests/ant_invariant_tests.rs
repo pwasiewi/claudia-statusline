@@ -216,6 +216,35 @@ fn golden_byte_identical_lib_rs_path_ant_enabled_sliceless() {
     );
 }
 
+/// With `[ant]` DISABLED the staleness vars must never be wired: the rendered
+/// output contains neither the `api_usage_age` nor the `api_models_age` value, and
+/// the render still matches the pinned golden. (The default layout references no
+/// `{api_*_age}` var AND the wiring block is gated on `[ant].enabled`, so the
+/// builder inserts nothing — D-08/D-12.) Proven on the library path; the
+/// byte-identical golden tests above already prove BOTH paths byte-for-byte.
+#[test]
+#[serial]
+fn age_vars_absent_with_ant_disabled_lib_path() {
+    let _guard = test_support::init();
+    std::env::set_var("NO_COLOR", "1");
+
+    let rendered = statusline::render_from_json(FIXED_PAYLOAD, false)
+        .expect("render_statusline must not fail (SC1: never fails)");
+
+    std::env::remove_var("NO_COLOR");
+
+    assert!(
+        !rendered.contains("api_usage_age") && !rendered.contains("api_models_age"),
+        "with [ant] disabled neither age var may appear, got: {rendered:?}"
+    );
+    let expected = read_fixture();
+    assert_eq!(
+        rendered.as_bytes(),
+        expected.as_slice(),
+        "lib.rs render with [ant] disabled must still match the v3.1.0 golden fixture"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Group 2: FAKE-EXEC NO-SPAWN (markers prove no ant/curl enrichment subprocess)
 // ---------------------------------------------------------------------------

@@ -670,6 +670,19 @@ fn format_statusline_string(
     parts.join(&separator)
 }
 
+/// Is a cache `age` past its configured staleness `threshold`?
+///
+/// `threshold` is a single-unit duration string (`30m`/`48h`, the `--max-age`
+/// grammar) parsed via [`crate::ant::duration::parse_max_age`]. Pure and total:
+/// a malformed threshold (or a future-dated / negative age) collapses to `false`
+/// (not-stale) so this can NEVER fail the render (D-16). No IO, no spawn, no net.
+fn is_stale(age: chrono::Duration, threshold: &str) -> bool {
+    match crate::ant::duration::parse_max_age(threshold) {
+        Ok(max) => age.to_std().map(|a| a >= max).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 /// Format statusline using the configurable layout system.
 ///
 /// This function builds all component variables and renders them
@@ -909,6 +922,44 @@ fn format_statusline_with_layout(
         .flatten()
         .and_then(|name| crate::ant::cache::read_usage_cache(&name));
     builder = builder.api_usage(api_usage_slice.as_ref(), &Colors::light_gray(), &reset);
+
+    // Per-cache staleness vars (opt-in): {api_usage_age} from the active account's
+    // usage slice fetched_at, {api_models_age} from the global models cache
+    // fetched_at. Wired ONCE here on the SAME shared builder site reached by BOTH
+    // render paths (Pitfall 6 — NEVER duplicated into main.rs/lib.rs). Gated on the
+    // SAME [ant].enabled. Both reads are TOTAL (collapse every error to None) so the
+    // render stays offline and never fails (D-16/ANT-02). Present-only: a never-synced
+    // cache inserts NO var (D-12). Staleness compares each cache age() to the
+    // user-configured threshold parsed with parse_max_age; a threshold parse error
+    // collapses to not-stale (never fail the render — D-16). With [ant] disabled the
+    // whole block is skipped, so the default render is byte-identical to v3.1.0.
+    if full_config.ant.enabled {
+        let usage_age = api_usage_slice
+            .as_ref()
+            .map(|u| crate::ant::duration::humanize_age(u.age()));
+        let usage_stale = api_usage_slice
+            .as_ref()
+            .map(|u| is_stale(u.age(), &full_config.ant.usage_stale_after))
+            .unwrap_or(false);
+
+        let models = crate::ant::cache::read_models_cache();
+        let models_age = models
+            .as_ref()
+            .map(|m| crate::ant::duration::humanize_age(m.age()));
+        let models_stale = models
+            .as_ref()
+            .map(|m| is_stale(m.age(), &full_config.ant.models_stale_after))
+            .unwrap_or(false);
+
+        builder = builder.api_age(
+            usage_age.as_deref(),
+            usage_stale,
+            models_age.as_deref(),
+            models_stale,
+            &Colors::light_gray(),
+            &reset,
+        );
+    }
 
     // Token rate (with component config)
     // Uses rolling window if configured, otherwise session average
