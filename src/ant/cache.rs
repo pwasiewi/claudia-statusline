@@ -77,10 +77,28 @@ impl ModelsCache {
     ///
     /// Pure: no IO. May be negative if `fetched_at` is slightly in the future
     /// (clock skew); callers humanize via [`crate::ant::duration::humanize_age`],
-    /// which clamps negatives to `<1m`.
+    /// which clamps negatives to `<1m`. A pathological on-disk `fetched_at`
+    /// (year 9999 / year 0001) whose delta overflows `chrono::Duration` collapses
+    /// to `Duration::zero()` rather than panicking (D-16 / WR-03).
     pub fn age(&self) -> chrono::Duration {
-        chrono::Utc::now() - self.fetched_at
+        cache_age_since(self.fetched_at)
     }
+}
+
+/// Compute `now - fetched_at` without ever panicking on an out-of-range delta.
+///
+/// `chrono`'s `DateTime - DateTime` (and `signed_duration_since`) can overflow
+/// for pathological timestamps (e.g. a corrupt/attacker-written `fetched_at` of
+/// year 9999 or year 0001 in the plain-JSON cache file). Render resilience
+/// (D-16) requires this never to fault, so we use the checked subtraction and
+/// fall back to `Duration::zero()` on overflow — which `humanize_age` renders as
+/// `<1m`, the same as the clock-skew case (WR-03).
+fn cache_age_since(fetched_at: DateTime<Utc>) -> chrono::Duration {
+    // chrono 0.4's `DateTime::signed_duration_since` clamps to
+    // `TimeDelta::MIN/MAX` on overflow rather than panicking (unlike the `-`
+    // operator, which can panic). The regression test pins this no-panic
+    // contract for year-9999 / year-0001 `fetched_at` values.
+    chrono::Utc::now().signed_duration_since(fetched_at)
 }
 
 /// Resolve the models cache file path **without touching the filesystem**.
@@ -261,8 +279,11 @@ impl UsageCache {
     ///
     /// Pure: no IO. May be negative under clock skew; humanize via
     /// [`crate::ant::duration::humanize_age`], which clamps negatives to `<1m`.
+    /// A pathological on-disk `fetched_at` whose delta overflows
+    /// `chrono::Duration` collapses to `Duration::zero()` rather than panicking
+    /// (D-16 / WR-03).
     pub fn age(&self) -> chrono::Duration {
-        chrono::Utc::now() - self.fetched_at
+        cache_age_since(self.fetched_at)
     }
 }
 
@@ -450,5 +471,39 @@ mod usage_tests {
         assert!(read_usage_cache("definitely-absent-account").is_none());
         // A name that fails sanitization also collapses to None (never errs).
         assert!(read_usage_cache("../escape").is_none());
+    }
+
+    // WR-03: a pathological on-disk `fetched_at` (year 9999 / year 0001) must
+    // flow through age() + humanize_age() without panicking. chrono's DateTime
+    // subtraction can overflow for extreme timestamps; cache_age_since() guards
+    // it with a checked subtraction that falls back to zero.
+    #[test]
+    fn extreme_fetched_at_never_panics_through_age_and_humanize() {
+        use crate::ant::duration::humanize_age;
+        use chrono::TimeZone;
+
+        for fetched_at in [
+            Utc.with_ymd_and_hms(9999, 12, 31, 23, 59, 59).unwrap(),
+            Utc.with_ymd_and_hms(1, 1, 1, 0, 0, 0).unwrap(),
+        ] {
+            let models = ModelsCache {
+                schema_version: MODELS_CACHE_SCHEMA_VERSION,
+                fetched_at,
+                models: HashMap::new(),
+            };
+            // No panic computing the age, and humanize renders some string.
+            let _ = humanize_age(models.age());
+
+            let usage = UsageCache {
+                schema_version: USAGE_CACHE_SCHEMA_VERSION,
+                fetched_at,
+                account: "work".to_string(),
+                today_usd: 0.0,
+                mtd_usd: 0.0,
+                tz: "UTC".to_string(),
+                tokens_by_model: HashMap::new(),
+            };
+            let _ = humanize_age(usage.age());
+        }
     }
 }
