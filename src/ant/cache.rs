@@ -72,6 +72,17 @@ pub struct ModelsCache {
     pub models: HashMap<String, ModelEntry>,
 }
 
+impl ModelsCache {
+    /// Age of this cache relative to now (`Utc::now() - fetched_at`).
+    ///
+    /// Pure: no IO. May be negative if `fetched_at` is slightly in the future
+    /// (clock skew); callers humanize via [`crate::ant::duration::humanize_age`],
+    /// which clamps negatives to `<1m`.
+    pub fn age(&self) -> chrono::Duration {
+        chrono::Utc::now() - self.fetched_at
+    }
+}
+
 /// Resolve the models cache file path **without touching the filesystem**.
 ///
 /// Returns `${XDG_CACHE_HOME:-~/.cache}/claudia-statusline/ant/models.json`.
@@ -243,6 +254,16 @@ pub struct UsageCache {
     pub tz: String,
     /// Canonical-model-id => per-type token breakdown.
     pub tokens_by_model: HashMap<String, TokenBreakdown>,
+}
+
+impl UsageCache {
+    /// Age of this cache relative to now (`Utc::now() - fetched_at`).
+    ///
+    /// Pure: no IO. May be negative under clock skew; humanize via
+    /// [`crate::ant::duration::humanize_age`], which clamps negatives to `<1m`.
+    pub fn age(&self) -> chrono::Duration {
+        chrono::Utc::now() - self.fetched_at
+    }
 }
 
 /// Validate and return an account label safe to use as a path component.

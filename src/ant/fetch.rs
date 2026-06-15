@@ -396,7 +396,10 @@ fn validate_cursor(id: &str) -> Result<()> {
 
 /// Whether an executable is resolvable on `PATH` (no spawn). Used to choose the
 /// transport and to produce a clear no-tool error.
-fn tool_on_path(tool: &str) -> bool {
+///
+/// `pub(crate)` so the `ant doctor` command (Plan 09-03) can report PATH
+/// availability without re-implementing the lookup.
+pub(crate) fn tool_on_path(tool: &str) -> bool {
     let path = match std::env::var_os("PATH") {
         Some(p) => p,
         None => return false,

@@ -16,7 +16,10 @@
 //!   08-02; declared here as a placeholder so the module graph is stable).
 //! - [`duration`] — pure `--max-age` / staleness duration parse + humanize
 //!   helpers (no new crate; Phase 09 foundation).
+//! - [`audit`] — the shared `sk-ant-` leak scanner over on-disk artifacts
+//!   (caches + debug log; never scans process env, D-18; Phase 09 foundation).
 
+pub mod audit;
 pub mod cache;
 pub mod config;
 pub mod duration;
