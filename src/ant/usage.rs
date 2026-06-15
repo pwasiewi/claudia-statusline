@@ -283,8 +283,14 @@ pub fn sum_cents_to_usd(env: &ReportEnvelope<CostItem>) -> f64 {
         .iter()
         .flat_map(|b| &b.results)
         .filter_map(|r| r.amount.parse::<f64>().ok())
+        // `f64::parse` accepts "-500", "inf", "NaN", and "1e400" (→ inf). A
+        // malformed/hostile Admin response must not drive the figure negative,
+        // infinite, or NaN — keep only finite, non-negative amounts (WR-04).
+        .filter(|c| c.is_finite() && *c >= 0.0)
         .sum();
-    cents / 100.0
+    // Clamp the final USD figure defensively (>= 0.0), so the rendered
+    // `{api_cost_*}` can never be negative.
+    (cents / 100.0).max(0.0)
 }
 
 /// Accumulate one usage envelope's `results[]` into a per-model
@@ -659,6 +665,25 @@ mod tests {
         let env = cost_env(&[&["1234", "not-a-number"], &["66"]]);
         let usd = sum_cents_to_usd(&env);
         assert!((usd - 13.00).abs() < 1e-9, "expected 13.00, got {usd}");
+    }
+
+    // WR-04: negative / Inf / NaN amounts parse successfully via `f64::parse`
+    // but must NOT corrupt the total. They are filtered to finite, non-negative
+    // values, and the final figure is clamped >= 0.0.
+    #[test]
+    fn sum_cents_to_usd_rejects_negative_inf_nan() {
+        // "-500" (negative), "inf"/"1e400" (non-finite), "NaN" (non-finite) are
+        // all dropped; only the valid "1300" cents => $13.00 survives.
+        let env = cost_env(&[&["-500", "inf", "NaN", "1e400"], &["1300"]]);
+        let usd = sum_cents_to_usd(&env);
+        assert!(usd.is_finite(), "total must be finite, got {usd}");
+        assert!((usd - 13.00).abs() < 1e-9, "expected 13.00, got {usd}");
+
+        // An envelope of ONLY bad amounts collapses to a clamped 0.0 (never
+        // negative, never NaN/inf).
+        let only_bad = cost_env(&[&["-500", "inf", "NaN"]]);
+        let usd_bad = sum_cents_to_usd(&only_bad);
+        assert_eq!(usd_bad, 0.0, "all-bad amounts must clamp to 0.0");
     }
 
     // today = [UTC midnight today, UTC midnight tomorrow); MTD = [first-of-month,
