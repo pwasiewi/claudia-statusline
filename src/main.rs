@@ -116,6 +116,12 @@ enum SessionsAction {
         /// Number of sessions to show
         #[arg(long, default_value_t = 25)]
         limit: usize,
+        /// Only sessions whose workspace is this directory or below it
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<String>,
+        /// Shorthand for --workspace $PWD: only this project's sessions
+        #[arg(long, conflicts_with = "workspace")]
+        here: bool,
     },
     /// Print all parameters of one session: `#` from the list or a session id prefix
     Show {
@@ -130,6 +136,12 @@ enum SessionsAction {
         /// Number of sessions to show
         #[arg(long, default_value_t = 25)]
         limit: usize,
+        /// Only sessions whose workspace is this directory or below it
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<String>,
+        /// Shorthand for --workspace $PWD: only this project's sessions
+        #[arg(long, conflicts_with = "workspace")]
+        here: bool,
     },
 }
 
@@ -480,14 +492,32 @@ fn main() -> Result<()> {
                     all: false,
                     attributed: false,
                     limit: 25,
+                    workspace: None,
+                    here: false,
                 }) {
                     SessionsAction::List {
                         all,
                         attributed,
                         limit,
-                    } => commands::sessions::list(all, attributed, limit),
+                        workspace,
+                        here,
+                    } => commands::sessions::list(
+                        all,
+                        attributed,
+                        limit,
+                        commands::sessions::workspace_filter(workspace, here)?,
+                    ),
                     SessionsAction::Show { selector } => commands::sessions::show(&selector),
-                    SessionsAction::Pick { all, limit } => commands::sessions::pick(all, limit),
+                    SessionsAction::Pick {
+                        all,
+                        limit,
+                        workspace,
+                        here,
+                    } => commands::sessions::pick(
+                        all,
+                        limit,
+                        commands::sessions::workspace_filter(workspace, here)?,
+                    ),
                 };
                 // Selection mistakes are user-facing: plain text, not Debug.
                 if let Err(e) = res {
